@@ -1,0 +1,5 @@
+# Ignore object files, temporary compiler files,
+# auto-generated files and the executable itself
+*.o
+*.so
+*.sh
