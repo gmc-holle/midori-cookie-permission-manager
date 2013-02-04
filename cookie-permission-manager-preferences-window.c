@@ -447,7 +447,9 @@ static void cookie_permission_manager_preferences_window_init(CookiePermissionMa
 	gtk_tree_view_append_column(GTK_TREE_VIEW(priv->list), column);
 
 	scrolled=gtk_scrolled_window_new(NULL, NULL);
+#ifdef HAVE_GTK3
 	gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(scrolled), height*10);
+#endif
 	gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
 	gtk_container_add(GTK_CONTAINER(scrolled), priv->list);
 	gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(scrolled), GTK_SHADOW_IN);
