@@ -199,6 +199,9 @@ static void _cookie_permission_manager_open_database(CookiePermissionManager *se
 			for(cookie=cookies; cookie; cookie->next)
 			{
 				soup_cookie_jar_delete_cookie(priv->cookieJar, (SoupCookie*)cookie->data);
+				g_message("Deleted temporary cookie: domain=%s, name=%s",
+							soup_cookie_get_domain((SoupCookie*)cookie->data),
+							soup_cookie_get_name((SoupCookie*)cookie->data));
 			}
 			soup_cookies_free(cookies);
 			soup_uri_free(uri);
@@ -209,6 +212,9 @@ static void _cookie_permission_manager_open_database(CookiePermissionManager *se
 				if(soup_cookie_domain_matches((SoupCookie*)cookie->data, domain))
 				{
 					soup_cookie_jar_delete_cookie(priv->cookieJar, (SoupCookie*)cookie->data);
+					g_message("Deleted temporary cookie: domain=%s, name=%s",
+								soup_cookie_get_domain((SoupCookie*)cookie->data),
+								soup_cookie_get_name((SoupCookie*)cookie->data));
 				}
 			}
 			soup_cookies_free(cookies);
@@ -279,25 +285,74 @@ static gint _cookie_permission_manager_sort_cookies_by_domain(SoupCookie *inLeft
 	return(g_ascii_strcasecmp(domainLeft, domainRight));
 }
 
+static GSList* _cookie_permission_manager_get_number_domains_and_cookies(CookiePermissionManager *self,
+																			GSList *inCookies,
+																			gint *ioNumberDomains,
+																			gint *ioNumberCookies)
+{
+	GSList			*sortedList, *iter;
+	gint			domains, cookies;
+	const gchar		*lastDomain=NULL;
+	const gchar		*cookieDomain;
+
+	/* Make copy and sort cookies in new list */
+	sortedList=g_slist_copy(inCookies);
+
+	/* Sort cookies by domain to prevent a doman counted multiple times */
+	sortedList=g_slist_sort(sortedList, (GCompareFunc)_cookie_permission_manager_sort_cookies_by_domain);
+
+	/* Iterate through list and count domains and cookies */
+	domains=cookies=0;
+	for(iter=sortedList; iter; iter=iter->next)
+	{
+		cookieDomain=soup_cookie_get_domain((SoupCookie*)iter->data);
+
+		if(!lastDomain || g_ascii_strcasecmp(lastDomain, cookieDomain)!=0)
+		{
+			domains++;
+			lastDomain=cookieDomain;
+		}
+
+		cookies++;
+	}
+
+	/* Store counted numbers to final variables */
+	if(ioNumberDomains) *ioNumberDomains=domains;
+	if(ioNumberCookies) *ioNumberCookies=cookies;
+
+	/* Return the copied but sorted cookie list. Caller is responsible to free
+	 * this list with g_slist_free
+	 */
+	return(sortedList);
+}
+
 static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *self,
-														const gchar *inDomain,
 														GSList *inUnknownCookies)
 {
 	CookiePermissionManagerPrivate	*priv=self->priv;
 	GtkWidget						*dialog;
 	GtkWidget						*button;
 	gchar							*message;
-	gint							numberCookies;
+	gint							numberDomains, numberCookies;
 	gint							response;
+	GSList							*sortedCookies;
 
 	/* Build message to display */
-	numberCookies=g_slist_length(inUnknownCookies);
-	if(inDomain)
+	sortedCookies=_cookie_permission_manager_get_number_domains_and_cookies(self,
+																			inUnknownCookies,
+																			&numberDomains,
+																			&numberCookies);
+																			
+	if(numberDomains==1)
 	{
+		const gchar					*cookieDomain=soup_cookie_get_domain((SoupCookie*)sortedCookies->data);
+
+		if(*cookieDomain=='.') cookieDomain++;
+		
 		if(numberCookies>1)
-			message=g_strdup_printf(_("The website %s wants to store %d cookies."), inDomain, numberCookies);
+			message=g_strdup_printf(_("The website %s wants to store %d cookies."), cookieDomain, numberCookies);
 		else
-			message=g_strdup_printf(_("The website %s wants to store a cookie."), inDomain);
+			message=g_strdup_printf(_("The website %s wants to store a cookie."), cookieDomain);
 	}
 		else
 		{
@@ -325,19 +380,18 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 
 	response=gtk_dialog_run(GTK_DIALOG(dialog));
 
-	/* Store user's decision in database if it is not a temporary block */
+	/* Store user's decision in database if it is not a temporary block.
+	 * We use the already sorted list of cookies to prevent multiple
+	 * updates of database for the same domain. This sorted list is a copy
+	 * to avoid a reorder of cookies
+	 */
 	if(response>=0)
 	{
 		const gchar					*lastDomain=NULL;
 		GSList						*cookies;
 
-		/* Sort cookies by domain to prevent multiple updates of database
-		 * for the same domain
-		 */
-		inUnknownCookies=g_slist_sort(inUnknownCookies, (GCompareFunc)_cookie_permission_manager_sort_cookies_by_domain);
-
 		/* Iterate through cookies and store decision for each domain once */
-		for(cookies=inUnknownCookies; cookies; cookies=cookies->next)
+		for(cookies=sortedCookies; cookies; cookies=cookies->next)
 		{
 			SoupCookie				*cookie=(SoupCookie*)cookies->data;
 			const gchar				*cookieDomain=soup_cookie_get_domain(cookie);
@@ -347,8 +401,6 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 			/* Store decision if new domain found while iterating through cookies */
 			if(!lastDomain || g_ascii_strcasecmp(lastDomain, cookieDomain)!=0)
 			{
-				g_message("%s [store]: domain=%s, decision=%d", __func__, cookieDomain, response);
-
 				gchar	*sql;
 				gchar	*error=NULL;
 				gint	success;
@@ -368,10 +420,10 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 
 	/* Free up allocated resources */
 	g_free(message);
+	g_slist_free(sortedCookies);
 	gtk_widget_destroy(dialog);
 
 	/* Return user's selection */
-g_message("%s: User selected %d", __func__, response);
 	return(response>=0 ? response : COOKIE_PERMISSION_MANAGER_POLICY_BLOCK);
 }
 
@@ -381,8 +433,9 @@ static void _cookie_permission_manager_on_cookie_changed(CookiePermissionManager
 															SoupCookie *inNewCookie,
 															SoupCookieJar *inCookieJar)
 {
-	GSList		*newCookies;
-	gint		newCookiePolicy;
+	GSList			*newCookies;
+	gint			newCookiePolicy;
+	const gchar		*domain;
 
 	/* Do not check changed cookies because they must have been allowed before.
 	 * Also do not check removed cookies because they are removed ;)
@@ -398,7 +451,7 @@ static void _cookie_permission_manager_on_cookie_changed(CookiePermissionManager
 
 		case COOKIE_PERMISSION_MANAGER_POLICY_UNDETERMINED:
 			newCookies=g_slist_prepend(NULL, inNewCookie);
-			newCookiePolicy=_cookie_permission_manager_ask_for_policy(self, soup_cookie_get_domain(inNewCookie), newCookies);
+			newCookiePolicy=_cookie_permission_manager_ask_for_policy(self, newCookies);
 			if(newCookiePolicy==COOKIE_PERMISSION_MANAGER_POLICY_BLOCK)
 			{
 				/* Free cookie because it should be blocked */
@@ -477,7 +530,6 @@ g_free(_uri);
 						cookiePolicy==SOUP_COOKIE_JAR_ACCEPT_ALWAYS)
 				{
 					unknownCookies=g_slist_prepend(unknownCookies, cookie->data);
-					if(!soup_cookie_domain_matches(cookie->data, firstParty->host)) unknownMultipleDomains=TRUE;
 				}
 					else soup_cookie_free(cookie->data);
 				break;
@@ -496,7 +548,7 @@ g_free(_uri);
 	 */
 	if(g_slist_length(unknownCookies)>0)
 	{
-		unknownCookiesPolicy=_cookie_permission_manager_ask_for_policy(self, unknownMultipleDomains ? NULL : firstParty->host, unknownCookies);
+		unknownCookiesPolicy=_cookie_permission_manager_ask_for_policy(self, unknownCookies);
 		if(unknownCookiesPolicy==COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT ||
 			unknownCookiesPolicy==COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT_FOR_SESSION)
 		{
