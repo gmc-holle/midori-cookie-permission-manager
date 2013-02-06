@@ -11,9 +11,6 @@
 
 #include "cookie-permission-manager-preferences-window.h"
 
-#include "cookie-permission-manager.h"
-
-
 /* Define this class in GObject system */
 G_DEFINE_TYPE(CookiePermissionManagerPreferencesWindow,
 				cookie_permission_manager_preferences_window,
@@ -24,7 +21,7 @@ enum
 {
 	PROP_0,
 
-	PROP_EXTENSION,
+	PROP_MANAGER,
 
 	PROP_LAST
 };
@@ -38,16 +35,16 @@ static GParamSpec* CookiePermissionManagerPreferencesWindowProperties[PROP_LAST]
 struct _CookiePermissionManagerPreferencesWindowPrivate
 {
 	/* Extension related */
-	MidoriExtension		*extension;
-	sqlite3				*database;
+	CookiePermissionManager	*manager;
+	sqlite3					*database;
 
 	/* Dialog related */
-	GtkWidget			*contentArea;
-	GtkListStore		*listStore;
-	GtkWidget			*list;
-	GtkTreeSelection	*listSelection;
-	GtkWidget			*deleteButton;
-	GtkWidget			*deleteAllButton;
+	GtkWidget				*contentArea;
+	GtkListStore			*listStore;
+	GtkWidget				*list;
+	GtkTreeSelection		*listSelection;
+	GtkWidget				*deleteButton;
+	GtkWidget				*deleteAllButton;
 };
 
 enum
@@ -67,6 +64,9 @@ static void _cookie_permission_manager_preferences_window_fill(CookiePermissionM
 
 	/* Clear tree/list view */
 	gtk_list_store_clear(priv->listStore);
+
+	/* If no database is present return here */
+	if(!priv->database) return;
 
 	/* Fill list store with policies from database */
 	success=sqlite3_prepare_v2(priv->database,
@@ -123,45 +123,27 @@ static void _cookie_permission_manager_preferences_window_fill(CookiePermissionM
 }
 
 /* Open database containing policies for cookie domains */
-static gboolean _cookie_permission_manager_preferences_window_open_database(CookiePermissionManagerPreferencesWindow *self)
+static void _cookie_permission_manager_preferences_window_database_changed(CookiePermissionManagerPreferencesWindow *self,
+																				GParamSpec *inSpec,
+																				gpointer inUserData)
 {
 	CookiePermissionManagerPreferencesWindowPrivate	*priv=self->priv;
-	const gchar										*configDir;
-	gchar											*databaseFile;
-	gint											success;
+	CookiePermissionManager							*manager=COOKIE_PERMISSION_MANAGER(inUserData);
 
-	/* Close any open database */
-	if(priv->database) sqlite3_close(priv->database);
-	priv->database=NULL;
+g_message("%s: Database changed from %p", __func__, priv->database);
 
-	/* Build path to database file */
-	configDir=midori_extension_get_config_dir(priv->extension);
-	if(!configDir)
-	{
-		g_warning(_("Could not get path to configuration of extension: path is NULL"));
-		return(FALSE);
-	}
+	/* Get pointer to new database */
+	g_object_get(manager, "database", &priv->database,NULL);
+g_message("%s: Database changed to %p", __func__, priv->database);
 
-	/* Open database */
-	databaseFile=g_build_filename(configDir, COOKIE_PERMISSION_DATABASE, NULL);
-	success=sqlite3_open(databaseFile, &priv->database);
-	g_free(databaseFile);
-	if(success!=SQLITE_OK)
-	{
-		g_warning(_("Could not open database of extenstion: %s"), sqlite3_errmsg(priv->database));
-
-		if(priv->database) sqlite3_close(priv->database);
-		priv->database=NULL;
-
-		return(FALSE);
-	}
-
+	/* Fill list with new database */
 	_cookie_permission_manager_preferences_window_fill(self);
 
 	/* Set up availability of management buttons */
-	gtk_widget_set_sensitive(priv->deleteAllButton, TRUE);
+	gtk_widget_set_sensitive(priv->deleteAllButton, priv->database!=NULL);
+	gtk_widget_set_sensitive(priv->list, priv->database!=NULL);
 
-	return(TRUE);
+	return;
 }
 
 /* Selection in list changed */
@@ -248,8 +230,7 @@ void _cookie_permission_manager_preferences_on_delete_all(CookiePermissionManage
 									GTK_DIALOG_MODAL,
 									GTK_MESSAGE_QUESTION,
 									GTK_BUTTONS_YES_NO,
-									_("Do you really want to delete all cookie permissions?"),
-									NULL);
+									_("Do you really want to delete all cookie permissions?"));
 
 	gtk_window_set_title(GTK_WINDOW(dialog), _("Delete all cookie permissions?"));
 	gtk_window_set_icon_name(GTK_WINDOW(dialog), GTK_STOCK_PROPERTIES);
@@ -309,9 +290,21 @@ static void cookie_permission_manager_preferences_window_set_property(GObject *i
 	switch(inPropID)
 	{
 		/* Construct-only properties */
-		case PROP_EXTENSION:
-			self->priv->extension=g_value_get_object(inValue);
-			_cookie_permission_manager_preferences_window_open_database(self);
+		case PROP_MANAGER:
+			/* Release old manager if available and disconnect signals */
+			if(self->priv->manager)
+			{
+				g_signal_handlers_disconnect_by_func(self->priv->manager, G_CALLBACK(_cookie_permission_manager_preferences_window_database_changed), self);
+				g_object_unref(self->priv->manager);
+			}
+
+			/* Set new cookie permission manager and
+			 * listen to changes in database property
+			 */
+			self->priv->manager=g_object_ref(g_value_get_object(inValue));
+			g_signal_connect_swapped(self->priv->manager, "notify::database", G_CALLBACK(_cookie_permission_manager_preferences_window_database_changed), self);
+			_cookie_permission_manager_preferences_window_database_changed(self, NULL, self->priv->manager);
+
 			break;
 
 		default:
@@ -329,8 +322,8 @@ static void cookie_permission_manager_preferences_window_get_property(GObject *i
 
 	switch(inPropID)
 	{
-		case PROP_EXTENSION:
-			g_value_set_object(outValue, self->priv->extension);
+		case PROP_MANAGER:
+			g_value_set_object(outValue, self->priv->manager);
 			break;
 
 		default:
@@ -355,11 +348,11 @@ static void cookie_permission_manager_preferences_window_class_init(CookiePermis
 	g_type_class_add_private(klass, sizeof(CookiePermissionManagerPreferencesWindowPrivate));
 
 	/* Define properties */
-	CookiePermissionManagerPreferencesWindowProperties[PROP_EXTENSION]=
-		g_param_spec_object("extension",
-								_("Extension instance"),
-								_("The Midori extension instance for this extension"),
-								MIDORI_TYPE_EXTENSION,
+	CookiePermissionManagerPreferencesWindowProperties[PROP_MANAGER]=
+		g_param_spec_object("manager",
+								_("Cookie permission manager"),
+								_("Instance of current cookie permission manager"),
+								TYPE_COOKIE_PERMISSION_MANAGER,
 								G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY);
 
 	g_object_class_install_properties(gobjectClass, PROP_LAST, CookiePermissionManagerPreferencesWindowProperties);
@@ -384,7 +377,7 @@ static void cookie_permission_manager_preferences_window_init(CookiePermissionMa
 	priv=self->priv=COOKIE_PERMISSION_MANAGER_PREFERENCES_WINDOW_GET_PRIVATE(self);
 
 	/* Set up default values */
-	priv->database=NULL;
+	priv->manager=NULL;
 
 	/* Get content area to add gui controls to */
 	priv->contentArea=gtk_dialog_get_content_area(GTK_DIALOG(self));
@@ -427,6 +420,10 @@ static void cookie_permission_manager_preferences_window_init(CookiePermissionMa
 
 	/* Set up cookie domain list */
 	priv->list=gtk_tree_view_new_with_model(GTK_TREE_MODEL(priv->listStore));
+
+#ifndef HAVE_GTK3
+	gtk_widget_set_size_request(priv->list, -1, 300);
+#endif
 
 	priv->listSelection=gtk_tree_view_get_selection(GTK_TREE_VIEW(priv->list));
 	gtk_tree_selection_set_mode(priv->listSelection, GTK_SELECTION_MULTIPLE);
@@ -483,9 +480,9 @@ static void cookie_permission_manager_preferences_window_init(CookiePermissionMa
 /* Implementation: Public API */
 
 /* Create new object */
-GtkWidget* cookie_permission_manager_preferences_window_new(MidoriExtension *inExtension)
+GtkWidget* cookie_permission_manager_preferences_window_new(CookiePermissionManager *inManager)
 {
 	return(g_object_new(TYPE_COOKIE_PERMISSION_MANAGER_PREFERENCES_WINDOW,
-							"extension", inExtension,
+							"manager", inManager,
 							NULL));
 }

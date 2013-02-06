@@ -26,6 +26,10 @@ enum
 	PROP_EXTENSION,
 	PROP_APPLICATION,
 
+	PROP_DATABASE,
+	PROP_ASK_FOR_UNKNOWN_POLICY,
+
+
 	PROP_LAST
 };
 
@@ -41,6 +45,7 @@ struct _CookiePermissionManagerPrivate
 	MidoriExtension					*extension;
 	MidoriApp						*application;
 	sqlite3							*database;
+	gboolean						askForUnknownPolicy;
 
 	/* Session related */
 	void(*oldRequestQueued)(SoupSessionFeature *inFeature, SoupSession *inSession, SoupMessage *inMessage);
@@ -66,8 +71,7 @@ static void _cookie_permission_manager_error(CookiePermissionManager *self, cons
 									GTK_BUTTONS_OK,
 									_("A fatal error occurred which prevents "
 									  "the cookie permission manager extension "
-									  "to continue. You should disable it."),
-									NULL);
+									  "to continue. You should disable it."));
 
 	gtk_window_set_title(GTK_WINDOW(dialog), _("Error in cookie permission manager extension"));
 	gtk_window_set_icon_name(GTK_WINDOW (dialog), "midori");
@@ -96,8 +100,12 @@ static void _cookie_permission_manager_open_database(CookiePermissionManager *se
 	sqlite3_stmt					*statement=NULL;
 
 	/* Close any open database */
-	if(priv->database) sqlite3_close(priv->database);
-	priv->database=NULL;
+	if(priv->database)
+	{
+		sqlite3_close(priv->database);
+		priv->database=NULL;
+		g_object_notify_by_pspec(G_OBJECT(self), CookiePermissionManagerProperties[PROP_DATABASE]);
+	}
 
 	/* Build path to database file */
 	configDir=midori_extension_get_config_dir(priv->extension);
@@ -224,6 +232,8 @@ static void _cookie_permission_manager_open_database(CookiePermissionManager *se
 		else g_warning("SQL fails: %s", sqlite3_errmsg(priv->database));
 
 	sqlite3_finalize(statement);
+
+	g_object_notify_by_pspec(G_OBJECT(self), CookiePermissionManagerProperties[PROP_DATABASE]);
 }
 
 /* Get policy for cookies from domain */
@@ -277,7 +287,6 @@ static gint _cookie_permission_manager_sort_cookies_by_domain(SoupCookie *inLeft
 {
 	const gchar		*domainLeft=soup_cookie_get_domain(inLeft);
 	const gchar		*domainRight=soup_cookie_get_domain(inRight);
-	gint			result;
 
 	if(*domainLeft=='.') domainLeft++;
 	if(*domainRight=='.') domainRight++;
@@ -435,7 +444,6 @@ static void _cookie_permission_manager_on_cookie_changed(CookiePermissionManager
 {
 	GSList			*newCookies;
 	gint			newCookiePolicy;
-	const gchar		*domain;
 
 	/* Do not check changed cookies because they must have been allowed before.
 	 * Also do not check removed cookies because they are removed ;)
@@ -483,7 +491,6 @@ g_free(_uri);
 	CookiePermissionManagerPrivate	*priv=self->priv;
 	GSList							*newCookies, *cookie;
 	GSList							*unknownCookies=NULL, *acceptedCookies=NULL;
-	gboolean						unknownMultipleDomains;
 	SoupURI							*firstParty;
 	SoupCookieJarAcceptPolicy		cookiePolicy;
 	gint							unknownCookiesPolicy;
@@ -499,7 +506,6 @@ g_free(_uri);
 	 */
 	newCookies=soup_cookies_from_response(inMessage);
 	firstParty=soup_message_get_first_party(inMessage);
-	unknownMultipleDomains=FALSE;
 	for(cookie=newCookies; cookie; cookie=cookie->next)
 	{
 		switch(_cookie_permission_manager_get_policy(self, cookie->data))
@@ -651,6 +657,10 @@ static void cookie_permission_manager_set_property(GObject *inObject,
 			self->priv->application=g_value_get_object(inValue);
 			break;
 
+		case PROP_ASK_FOR_UNKNOWN_POLICY:
+			cookie_permission_manager_set_ask_for_unknown_policy(self, g_value_get_boolean(inValue));
+			break;
+
 		default:
 			G_OBJECT_WARN_INVALID_PROPERTY_ID(inObject, inPropID, inSpec);
 			break;
@@ -672,6 +682,14 @@ static void cookie_permission_manager_get_property(GObject *inObject,
 
 		case PROP_APPLICATION:
 			g_value_set_object(outValue, self->priv->application);
+			break;
+
+		case PROP_DATABASE:
+			g_value_set_pointer(outValue, self->priv->database);
+			break;
+
+		case PROP_ASK_FOR_UNKNOWN_POLICY:
+			g_value_set_boolean(outValue, self->priv->askForUnknownPolicy);
 			break;
 
 		default:
@@ -709,6 +727,20 @@ static void cookie_permission_manager_class_init(CookiePermissionManagerClass *k
 								_("The Midori application instance this extension belongs to"),
 								MIDORI_TYPE_APP,
 								G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY);
+
+	CookiePermissionManagerProperties[PROP_DATABASE]=
+		g_param_spec_pointer("database",
+								_("Database instance"),
+								_("Pointer to sqlite database instance used by this extension"),
+								G_PARAM_READABLE);
+
+	CookiePermissionManagerProperties[PROP_ASK_FOR_UNKNOWN_POLICY]=
+		g_param_spec_boolean("ask-for-unknown-policy",
+								_("Ask for unknown policy"),
+								_("If true this extension ask for policy for every unknown domain."
+								  "If false this extension uses the global cookie policy set in midori settings."),
+								TRUE,
+								G_PARAM_READWRITE | G_PARAM_CONSTRUCT);
 
 	g_object_class_install_properties(gobjectClass, PROP_LAST, CookiePermissionManagerProperties);
 }
@@ -752,4 +784,48 @@ CookiePermissionManager* cookie_permission_manager_new(MidoriExtension *inExtens
 							"extension", inExtension,
 							"application", inApp,
 							NULL));
+}
+
+/* Get/set policy to ask for policy if unknown for a domain */
+gboolean cookie_permission_manager_get_ask_for_unknown_policy(CookiePermissionManager *self)
+{
+	g_return_val_if_fail(IS_COOKIE_PERMISSION_MANAGER(self), FALSE);
+
+	return(self->priv->askForUnknownPolicy);
+}
+
+void cookie_permission_manager_set_ask_for_unknown_policy(CookiePermissionManager *self, gboolean inDoAsk)
+{
+	g_return_if_fail(IS_COOKIE_PERMISSION_MANAGER(self));
+
+	if(inDoAsk!=self->priv->askForUnknownPolicy)
+	{
+		self->priv->askForUnknownPolicy=inDoAsk;
+		g_object_notify_by_pspec(G_OBJECT(self), CookiePermissionManagerProperties[PROP_ASK_FOR_UNKNOWN_POLICY]);
+	}
+}
+
+/************************************************************************************/
+
+/* Implementation: Enumeration */
+GType cookie_permission_manager_policy_get_type(void)
+{
+	static volatile gsize	g_define_type_id__volatile=0;
+
+	if(g_once_init_enter(&g_define_type_id__volatile))
+	{
+		static const GEnumValue values[]=
+		{
+			{ COOKIE_PERMISSION_MANAGER_POLICY_UNDETERMINED, "COOKIE_PERMISSION_MANAGER_POLICY_UNDETERMINED", "Undetermined" },
+			{ COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT, "COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT", "Accept" },
+			{ COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT_FOR_SESSION, "COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT_FOR_SESSION", "Accept for session" },
+			{ COOKIE_PERMISSION_MANAGER_POLICY_BLOCK, "COOKIE_PERMISSION_MANAGER_POLICY_BLOCK", "Block" },
+			{ 0, NULL, NULL }
+		};
+
+		GType	g_define_type_id=g_enum_register_static(g_intern_static_string("CookiePermissionManagerPolicy"), values);
+		g_once_init_leave(&g_define_type_id__volatile, g_define_type_id);
+	}
+
+	return(g_define_type_id__volatile);
 }

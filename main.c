@@ -26,7 +26,9 @@ static void _cpm_on_activate(MidoriExtension *inExtension, MidoriApp *inApp, gpo
 /* This extension was deactivated */
 static void _cpm_on_deactivate(MidoriExtension *inExtension, gpointer inUserData)
 {
-	if(cpm) g_object_unref(cpm);
+	g_return_if_fail(cpm);
+
+	g_object_unref(cpm);
 	cpm=NULL;
 }
 
@@ -40,9 +42,12 @@ static void _cpm_on_open_preferences_response(GtkWidget* inDialog,
 
 static void _cpm_on_open_preferences(MidoriExtension *inExtension)
 {
+	g_return_if_fail(cpm);
+
+	/* Show preferences window */
 	GtkWidget* dialog;
 
-	dialog=cookie_permission_manager_preferences_window_new(inExtension);
+	dialog=cookie_permission_manager_preferences_window_new(cpm);
 	gtk_window_set_modal(GTK_WINDOW(dialog), TRUE);
 	g_signal_connect(dialog, "response", G_CALLBACK (_cpm_on_open_preferences_response), inExtension);
 	gtk_widget_show_all(dialog);

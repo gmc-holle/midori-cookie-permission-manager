@@ -60,6 +60,13 @@ GType cookie_permission_manager_get_type(void);
 
 CookiePermissionManager* cookie_permission_manager_new(MidoriExtension *inExtension, MidoriApp *inApp);
 
+gboolean cookie_permission_manager_get_ask_for_unknown_policy(CookiePermissionManager *self);
+void cookie_permission_manager_set_ask_for_unknown_policy(CookiePermissionManager *self, gboolean inDoAsk);
+
+/* Enumeration */
+GType cookie_permission_manager_policy_get_type(void) G_GNUC_CONST;
+#define COOKIE_PERMISSION_MANAGER_TYPE_POLICY	(cookie_permission_manager_policy_get_type())
+
 G_END_DECLS
 
 #endif /* __COOKIE_PERMISSION_MANAGER__ */

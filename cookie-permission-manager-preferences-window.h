@@ -15,6 +15,8 @@
 #include "config.h"
 #include <midori/midori.h>
 
+#include "cookie-permission-manager.h"
+
 G_BEGIN_DECLS
 
 #define TYPE_COOKIE_PERMISSION_MANAGER_PREFERENCES_WINDOW				(cookie_permission_manager_preferences_window_get_type())
@@ -46,7 +48,7 @@ struct _CookiePermissionManagerPreferencesWindowClass
 /* Public API */
 GType cookie_permission_manager_preferences_window_get_type(void);
 
-GtkWidget* cookie_permission_manager_preferences_window_new(MidoriExtension *inExtension);
+GtkWidget* cookie_permission_manager_preferences_window_new(CookiePermissionManager *inManager);
 
 G_END_DECLS
 
