@@ -21,6 +21,7 @@ static void _cpm_on_activate(MidoriExtension *inExtension, MidoriApp *inApp, gpo
 	g_return_if_fail(cpm==NULL);
 
 	cpm=cookie_permission_manager_new(inExtension, inApp);
+	g_object_set(cpm, "ask-for-unknown-policy", midori_extension_get_boolean(inExtension, "ask-for-unknown-policy"), NULL);
 }
 
 /* This extension was deactivated */
@@ -57,12 +58,14 @@ static void _cpm_on_open_preferences(MidoriExtension *inExtension)
 MidoriExtension *extension_init(void)
 {
 	/* Set up extension */
-	MidoriExtension	*extension=g_object_new(	MIDORI_TYPE_EXTENSION,
+	MidoriExtension	*extension=g_object_new(MIDORI_TYPE_EXTENSION,
 												"name", _("Cookie Securiry Manager"),
 												"description", _("Manage cookie permission"),
 												"version", "0.1" MIDORI_VERSION_SUFFIX,
 												"authors", "Stephan Haller <nomad@froevel.de>",
 												NULL);
+
+	midori_extension_install_boolean(extension, "ask-for-unknown-policy", TRUE);
 
 	g_signal_connect(extension, "activate", G_CALLBACK(_cpm_on_activate), NULL);
 	g_signal_connect(extension, "deactivate", G_CALLBACK(_cpm_on_deactivate), NULL);

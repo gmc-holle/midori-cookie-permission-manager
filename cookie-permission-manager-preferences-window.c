@@ -45,6 +45,11 @@ struct _CookiePermissionManagerPreferencesWindowPrivate
 	GtkTreeSelection		*listSelection;
 	GtkWidget				*deleteButton;
 	GtkWidget				*deleteAllButton;
+	GtkWidget				*askForUnknownPolicyCheckbox;
+
+	gint					signalManagerChangedDatabaseID;
+	gint					signalManagerAskForUnknownPolicyID;
+	gint					signalAskForUnknownPolicyID;
 };
 
 enum
@@ -122,19 +127,37 @@ static void _cookie_permission_manager_preferences_window_fill(CookiePermissionM
 	sqlite3_finalize(statement);
 }
 
-/* Open database containing policies for cookie domains */
-static void _cookie_permission_manager_preferences_window_database_changed(CookiePermissionManagerPreferencesWindow *self,
-																				GParamSpec *inSpec,
-																				gpointer inUserData)
+/* Database instance in manager changed */
+static void _cookie_permission_manager_preferences_window_manager_database_changed(CookiePermissionManagerPreferencesWindow *self,
+																					GParamSpec *inSpec,
+																					gpointer inUserData)
 {
 	CookiePermissionManagerPreferencesWindowPrivate	*priv=self->priv;
 	CookiePermissionManager							*manager=COOKIE_PERMISSION_MANAGER(inUserData);
+	sqlite3											*database;
 
-g_message("%s: Database changed from %p", __func__, priv->database);
+	/* Close connection to any open database */
+	if(priv->database) sqlite3_close(priv->database);
+	priv->database=NULL;
 
-	/* Get pointer to new database */
-	g_object_get(manager, "database", &priv->database,NULL);
-g_message("%s: Database changed to %p", __func__, priv->database);
+	/* Get pointer to new database and open database */
+	g_object_get(manager, "database", &database, NULL);
+	if(database)
+	{
+		const gchar									*databaseFile;
+		gint										success;
+
+		databaseFile=sqlite3_db_filename(database, NULL);
+g_message("%s: Opening database %s", __func__, databaseFile);
+		success=sqlite3_open(databaseFile, &priv->database);
+		if(success!=SQLITE_OK)
+		{
+			g_warning(_("Could not open database of extenstion: %s"), sqlite3_errmsg(priv->database));
+
+			if(priv->database) sqlite3_close(priv->database);
+			priv->database=NULL;
+		}
+	}
 
 	/* Fill list with new database */
 	_cookie_permission_manager_preferences_window_fill(self);
@@ -144,6 +167,48 @@ g_message("%s: Database changed to %p", __func__, priv->database);
 	gtk_widget_set_sensitive(priv->list, priv->database!=NULL);
 
 	return;
+}
+
+/* Ask-for-unknown-policy in manager changed or check-box changed */
+static void _cookie_permission_manager_preferences_window_manager_ask_for_unknown_policy_changed(CookiePermissionManagerPreferencesWindow *self,
+																									GParamSpec *inSpec,
+																									gpointer inUserData)
+{
+g_message("%s: self=%p (%s), user-data=%p (%s)",
+			__func__,
+			(void*)self, self ? G_OBJECT_TYPE_NAME(self) : "<nil>",
+			(void*)inUserData, inUserData ? G_OBJECT_TYPE_NAME(inUserData) : "<nil>");
+	CookiePermissionManagerPreferencesWindowPrivate	*priv=self->priv;
+	CookiePermissionManager							*manager=COOKIE_PERMISSION_MANAGER(inUserData);
+	gboolean										doAsk;
+
+	/* Get new ask-for-unknown-policy value */
+	g_object_get(manager, "ask-for-unknown-policy", &doAsk, NULL);
+
+	/* Set toogle in widget (but block signal for toggle) */
+	g_signal_handler_block(priv->askForUnknownPolicyCheckbox, priv->signalAskForUnknownPolicyID);
+	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(priv->askForUnknownPolicyCheckbox), doAsk);
+	g_signal_handler_unblock(priv->askForUnknownPolicyCheckbox, priv->signalAskForUnknownPolicyID);
+}
+
+static void _cookie_permission_manager_preferences_window_ask_for_unknown_policy_changed(CookiePermissionManagerPreferencesWindow *self,
+																							gpointer *inUserData)
+{
+	CookiePermissionManagerPreferencesWindowPrivate	*priv=self->priv;
+	gboolean										doAsk;
+
+g_message("%s: self=%p (%s), priv=%p, user-data=%p (%s), manager=%p (%s)",
+			__func__,
+			(void*)self, self ? G_OBJECT_TYPE_NAME(self) : "<nil>",
+			(void*)priv,
+			(void*)inUserData, inUserData ? G_OBJECT_TYPE_NAME(inUserData) : "<nil>",
+			(void*)priv->manager, priv->manager ? G_OBJECT_TYPE_NAME(priv->manager) : "<nil>");
+
+	/* Get toogle state of widget (but block signal for manager) and set in manager */
+	g_signal_handler_block(priv->manager, priv->signalManagerAskForUnknownPolicyID);
+	doAsk=gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(priv->askForUnknownPolicyCheckbox));
+	g_object_set(priv->manager, "ask-for-unknown-policy", doAsk, NULL);
+	g_signal_handler_unblock(priv->manager, priv->signalManagerAskForUnknownPolicyID);
 }
 
 /* Selection in list changed */
@@ -275,6 +340,18 @@ static void cookie_permission_manager_preferences_window_finalize(GObject *inObj
 	if(priv->database) sqlite3_close(priv->database);
 	priv->database=NULL;
 
+	if(priv->manager)
+	{
+		if(priv->signalManagerChangedDatabaseID) g_signal_handler_disconnect(priv->manager, priv->signalManagerChangedDatabaseID);
+		priv->signalManagerChangedDatabaseID=0;
+
+		if(priv->signalManagerAskForUnknownPolicyID) g_signal_handler_disconnect(priv->manager, priv->signalManagerAskForUnknownPolicyID);
+		priv->signalManagerAskForUnknownPolicyID=0;
+
+		g_object_unref(priv->manager);
+		priv->manager=NULL;
+	}
+
 	/* Call parent's class finalize method */
 	G_OBJECT_CLASS(cookie_permission_manager_preferences_window_parent_class)->finalize(inObject);
 }
@@ -285,26 +362,47 @@ static void cookie_permission_manager_preferences_window_set_property(GObject *i
 																		const GValue *inValue,
 																		GParamSpec *inSpec)
 {
-	CookiePermissionManagerPreferencesWindow	*self=COOKIE_PERMISSION_MANAGER_PREFERENCES_WINDOW(inObject);
-	
+	CookiePermissionManagerPreferencesWindow		*self=COOKIE_PERMISSION_MANAGER_PREFERENCES_WINDOW(inObject);
+	CookiePermissionManagerPreferencesWindowPrivate	*priv=self->priv;
+	GObject											*manager;
+
 	switch(inPropID)
 	{
 		/* Construct-only properties */
 		case PROP_MANAGER:
 			/* Release old manager if available and disconnect signals */
-			if(self->priv->manager)
+			if(priv->manager)
 			{
-				g_signal_handlers_disconnect_by_func(self->priv->manager, G_CALLBACK(_cookie_permission_manager_preferences_window_database_changed), self);
-				g_object_unref(self->priv->manager);
+				if(priv->signalManagerChangedDatabaseID) g_signal_handler_disconnect(priv->manager, priv->signalManagerChangedDatabaseID);
+				priv->signalManagerChangedDatabaseID=0;
+
+				if(priv->signalManagerAskForUnknownPolicyID) g_signal_handler_disconnect(priv->manager, priv->signalManagerAskForUnknownPolicyID);
+				priv->signalManagerAskForUnknownPolicyID=0;
+
+				g_object_unref(priv->manager);
+				priv->manager=NULL;
 			}
 
 			/* Set new cookie permission manager and
 			 * listen to changes in database property
 			 */
-			self->priv->manager=g_object_ref(g_value_get_object(inValue));
-			g_signal_connect_swapped(self->priv->manager, "notify::database", G_CALLBACK(_cookie_permission_manager_preferences_window_database_changed), self);
-			_cookie_permission_manager_preferences_window_database_changed(self, NULL, self->priv->manager);
+			manager=g_value_get_object(inValue);
+			if(manager)
+			{
+				priv->manager=g_object_ref(manager);
 
+				priv->signalManagerChangedDatabaseID=g_signal_connect_swapped(priv->manager,
+																					"notify::database",
+																					G_CALLBACK(_cookie_permission_manager_preferences_window_manager_database_changed),
+																					self);
+				priv->signalManagerAskForUnknownPolicyID=g_signal_connect_swapped(priv->manager,
+																					"notify::ask-for-unknown-policy",
+																					G_CALLBACK(_cookie_permission_manager_preferences_window_manager_ask_for_unknown_policy_changed),
+																					self);
+
+				_cookie_permission_manager_preferences_window_manager_database_changed(self, NULL, priv->manager);
+				_cookie_permission_manager_preferences_window_manager_ask_for_unknown_policy_changed(self, NULL, priv->manager);
+			}
 			break;
 
 		default:
@@ -472,6 +570,18 @@ static void cookie_permission_manager_preferences_window_init(CookiePermissionMa
 	g_signal_connect_swapped(priv->deleteAllButton, "clicked", G_CALLBACK(_cookie_permission_manager_preferences_on_delete_all), self);
 
 	gtk_box_pack_start(GTK_BOX(vbox), hbox, TRUE, TRUE, 5);
+
+	/* Add "ask-for-unknown-policy" checkbox */
+	priv->askForUnknownPolicyCheckbox=gtk_check_button_new_with_mnemonic(_("A_sk for policy if unknown for a domain"));
+	priv->signalAskForUnknownPolicyID=g_signal_connect_swapped(priv->askForUnknownPolicyCheckbox,
+																"toggled",
+																G_CALLBACK(_cookie_permission_manager_preferences_window_ask_for_unknown_policy_changed),
+																self);
+	gtk_box_pack_start(GTK_BOX(vbox), priv->askForUnknownPolicyCheckbox, TRUE, TRUE, 5);
+g_message("%s: askForUnknownPolicyCheckbox=%p (%s), signal=%d",
+			__func__,
+			(void*)priv->askForUnknownPolicyCheckbox, priv->askForUnknownPolicyCheckbox ? G_OBJECT_TYPE_NAME(priv->askForUnknownPolicyCheckbox) : "<nil>",
+			priv->signalAskForUnknownPolicyID);
 
 	/* Finalize setup of content area */
 	gtk_container_add(GTK_CONTAINER(priv->contentArea), vbox);

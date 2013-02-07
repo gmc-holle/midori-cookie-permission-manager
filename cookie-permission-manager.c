@@ -244,6 +244,7 @@ static gint _cookie_permission_manager_get_policy(CookiePermissionManager *self,
 	gchar							*domain;
 	gint							error;
 	gint							policy=COOKIE_PERMISSION_MANAGER_POLICY_UNDETERMINED;
+	gboolean						foundPolicy=FALSE;
 
 	/* Check for open database */
 	g_return_val_if_fail(priv->database, COOKIE_PERMISSION_MANAGER_POLICY_UNDETERMINED);
@@ -251,14 +252,16 @@ static gint _cookie_permission_manager_get_policy(CookiePermissionManager *self,
 	/* Lookup policy for cookie domain in database */
 	domain=g_strdup(soup_cookie_get_domain(inCookie));
 	if(*domain=='.') *domain='%';
-g_message("%s: cookieDomain=%s -> policy=%d", __func__, domain, policy);
+g_message("%s: cookieDomain=%s", __func__, domain);
 
 	error=sqlite3_prepare_v2(priv->database,
 								"SELECT domain, value FROM policies WHERE domain LIKE ? ORDER BY domain DESC;",
 								-1,
 								&statement,
 								NULL);
+g_message("%s: stmt=%p, prepare statement=%d", __func__, statement, error);
 	if(statement && error==SQLITE_OK) error=sqlite3_bind_text(statement, 1, domain, -1, NULL);
+g_message("%s: stmt=%p, bind text=%d", __func__, statement, error);
 	if(statement && error==SQLITE_OK)
 	{
 		while(policy==COOKIE_PERMISSION_MANAGER_POLICY_UNDETERMINED &&
@@ -270,6 +273,7 @@ g_message("%s: checking domain %s against %s", __func__, domain, policyDomain);
 			if(soup_cookie_domain_matches(inCookie, policyDomain))
 			{
 				policy=sqlite3_column_int(statement, 1);
+				foundPolicy=TRUE;
 g_message("%s: Found domain in database -> policy=%d", __func__, policy);
 			}
 		}
@@ -277,6 +281,32 @@ g_message("%s: Found domain in database -> policy=%d", __func__, policy);
 		else g_warning("SQL fails: %s", sqlite3_errmsg(priv->database));
 
 	sqlite3_finalize(statement);
+
+	/* Check if policy is undetermined. If it is then check if this policy was set by user.
+	 * If it was not set by user check if we should ask user for his decision
+	 */
+	if(!priv->askForUnknownPolicy && !foundPolicy)
+	{
+		switch(soup_cookie_jar_get_accept_policy(priv->cookieJar))
+		{
+			case SOUP_COOKIE_JAR_ACCEPT_ALWAYS:
+			case SOUP_COOKIE_JAR_ACCEPT_NO_THIRD_PARTY:
+				policy=COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT;
+				break;
+
+			case SOUP_COOKIE_JAR_ACCEPT_NEVER:
+				policy=COOKIE_PERMISSION_MANAGER_POLICY_BLOCK;
+				break;
+
+			default:
+				g_warning("Unknown default policy for cookie to use when policy is unknown. Domain was: %s", domain);
+				break;
+		}
+		
+		g_message("Policy is undetermined and user set _NOT_ ask to him. Using global settings for cookies set in Midori: %d", policy);
+	}
+
+	/* Release allocated resources */
 	g_free(domain);
 
 	return(policy);
@@ -623,8 +653,12 @@ static void cookie_permission_manager_finalize(GObject *inObject)
 	CookiePermissionManagerPrivate	*priv=COOKIE_PERMISSION_MANAGER(inObject)->priv;
 
 	/* Dispose allocated resources */
-	if(priv->database) sqlite3_close(priv->database);
-	priv->database=NULL;
+	if(priv->database)
+	{
+		sqlite3_close(priv->database);
+		priv->database=NULL;
+		g_object_notify_by_pspec(inObject, CookiePermissionManagerProperties[PROP_DATABASE]);
+	}
 
 	g_signal_handler_disconnect(priv->cookieJar, priv->cookieJarChangedID);
 
@@ -756,6 +790,7 @@ static void cookie_permission_manager_init(CookiePermissionManager *self)
 
 	/* Set up default values */
 	priv->database=NULL;
+	priv->askForUnknownPolicy=TRUE;
 
 	/* Hijack session's cookie jar to handle cookies requests on our own in HTTP streams
 	 * but remember old handlers to restore them on deactivation
@@ -801,6 +836,7 @@ void cookie_permission_manager_set_ask_for_unknown_policy(CookiePermissionManage
 	if(inDoAsk!=self->priv->askForUnknownPolicy)
 	{
 		self->priv->askForUnknownPolicy=inDoAsk;
+		midori_extension_set_boolean(self->priv->extension, "ask-for-unknown-policy", inDoAsk);
 		g_object_notify_by_pspec(G_OBJECT(self), CookiePermissionManagerProperties[PROP_ASK_FOR_UNKNOWN_POLICY]);
 	}
 }
