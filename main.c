@@ -66,6 +66,7 @@ MidoriExtension *extension_init(void)
 												NULL);
 
 	midori_extension_install_boolean(extension, "ask-for-unknown-policy", TRUE);
+	midori_extension_install_boolean(extension, "show-details-when-ask", FALSE);
 
 	g_signal_connect(extension, "activate", G_CALLBACK(_cpm_on_activate), NULL);
 	g_signal_connect(extension, "deactivate", G_CALLBACK(_cpm_on_deactivate), NULL);

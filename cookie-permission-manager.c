@@ -58,6 +58,15 @@ struct _CookiePermissionManagerPrivate
 	gint							cookieJarChangedID;
 };
 
+enum
+{
+	DOMAIN_COLUMN,
+	PATH_COLUMN,
+	NAME_COLUMN,
+	VALUE_COLUMN,
+	EXPIRE_DATE_COLUMN,
+	N_COLUMN
+};
 
 /* IMPLEMENTATION: Private variables and methods */
 static void _cookie_permission_manager_error(CookiePermissionManager *self, const gchar *inReason)
@@ -350,23 +359,96 @@ static GSList* _cookie_permission_manager_get_number_domains_and_cookies(CookieP
 	return(sortedList);
 }
 
+static void _cookie_permission_manager_when_ask_expander_changed(CookiePermissionManager *self,
+																	GParamSpec *inSpec,
+																	gpointer inUserData)
+{
+	GtkExpander			*expander=GTK_EXPANDER(inUserData);
+
+	midori_extension_set_boolean(self->priv->extension, "show-details-when-ask", gtk_expander_get_expanded(expander));
+}
+
 static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *self,
 														GSList *inUnknownCookies)
 {
 	CookiePermissionManagerPrivate	*priv=self->priv;
 	GtkWidget						*dialog;
-	GtkWidget						*button;
-	gchar							*message;
+	GtkWidget						*widget;
+	GtkWidget						*contentArea;
+	GtkWidget						*vbox, *hbox;
+	GtkWidget						*expander;
+	GtkListStore					*listStore;
+	GtkTreeIter						listIter;
+	GtkWidget						*scrolled;
+	GtkWidget						*list;
+	GtkCellRenderer					*renderer;
+	GtkTreeViewColumn				*column;
+	gchar							*text;
 	gint							numberDomains, numberCookies;
 	gint							response;
-	GSList							*sortedCookies;
+	GSList							*sortedCookies, *cookies;
 
-	/* Build message to display */
+	/* Create a copy of cookies and sort them */
 	sortedCookies=_cookie_permission_manager_get_number_domains_and_cookies(self,
 																			inUnknownCookies,
 																			&numberDomains,
 																			&numberCookies);
-																			
+
+	/* Create list model and fill in data */
+	listStore=gtk_list_store_new(N_COLUMN,
+									G_TYPE_STRING,	/* DOMAIN_COLUMN */
+									G_TYPE_STRING,	/* PATH_COLUMN */
+									G_TYPE_STRING,	/* NAME_COLUMN */
+									G_TYPE_STRING,	/* VALUE_COLUMN */
+									G_TYPE_STRING	/* EXPIRE_DATE_COLUMN */);
+
+	for(cookies=sortedCookies; cookies; cookies=cookies->next)
+	{
+		SoupCookie				*cookie=(SoupCookie*)cookies->data;
+		SoupDate				*cookieDate=soup_cookie_get_expires(cookie);
+
+		text=soup_date_to_string(cookieDate, SOUP_DATE_HTTP);
+
+		gtk_list_store_append(listStore, &listIter);
+		gtk_list_store_set(listStore,
+							&listIter,
+							DOMAIN_COLUMN, soup_cookie_get_domain(cookie),
+							PATH_COLUMN, soup_cookie_get_path(cookie),
+							NAME_COLUMN, soup_cookie_get_name(cookie),
+							VALUE_COLUMN, soup_cookie_get_value(cookie),
+							EXPIRE_DATE_COLUMN, text,
+							-1);
+
+		g_free(text);
+	}
+
+	/* Create dialog with text, icon, title and so on */
+	dialog=gtk_dialog_new();
+
+	gtk_window_set_title(GTK_WINDOW(dialog), _("Confirm storing cookie"));
+	gtk_window_set_icon_name(GTK_WINDOW (dialog), "midori");
+
+	/* Get content area and layout widgets */
+	contentArea=gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+
+#ifdef HAVE_GTK3
+	vbox=gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	gtk_box_set_homogeneous(GTK_BOX(vbox), FALSE);
+#else
+	vbox=gtk_vbox_new(FALSE, 0);
+#endif
+
+	/* Create description text */
+#ifdef HAVE_GTK3
+	hbox=gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+	gtk_box_set_homogeneous(GTK_BOX(hbox), FALSE);
+#else
+	hbox=gtk_hbox_new(FALSE, 0);
+#endif
+
+	widget=gtk_image_new_from_stock(GTK_STOCK_DIALOG_QUESTION, GTK_ICON_SIZE_DIALOG);
+	gtk_box_pack_start(GTK_BOX(hbox), widget, FALSE, FALSE, 4);
+
 	if(numberDomains==1)
 	{
 		const gchar					*cookieDomain=soup_cookie_get_domain((SoupCookie*)sortedCookies->data);
@@ -374,34 +456,99 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 		if(*cookieDomain=='.') cookieDomain++;
 		
 		if(numberCookies>1)
-			message=g_strdup_printf(_("The website %s wants to store %d cookies."), cookieDomain, numberCookies);
+			text=g_strdup_printf(_("The website %s wants to store %d cookies."), cookieDomain, numberCookies);
 		else
-			message=g_strdup_printf(_("The website %s wants to store a cookie."), cookieDomain);
+			text=g_strdup_printf(_("The website %s wants to store a cookie."), cookieDomain);
 	}
 		else
 		{
-			message=g_strdup_printf(_("Multiple websites want to store %d cookies in total."), numberCookies);
+			text=g_strdup_printf(_("Multiple websites want to store %d cookies in total."), numberCookies);
 		}
 
-	/* Show confirmation dialog for undetermined cookies */
-	dialog=gtk_message_dialog_new(NULL,
-									GTK_DIALOG_MODAL,
-									GTK_MESSAGE_QUESTION,
-									GTK_BUTTONS_NONE,
-									message,
-									NULL);
+	widget=gtk_label_new(NULL);
+	gtk_label_set_markup(GTK_LABEL(widget), text);
+	gtk_label_set_line_wrap(GTK_LABEL(widget), TRUE);
+	gtk_box_pack_start(GTK_BOX(hbox), widget, FALSE, FALSE, 4);
+	g_free(text);
 
-	gtk_window_set_title(GTK_WINDOW(dialog), _("Confirm storing cookie"));
-	gtk_window_set_icon_name(GTK_WINDOW (dialog), "midori");
+	gtk_box_pack_start(GTK_BOX(vbox), hbox, FALSE, FALSE, 4);
 
-	button=gtk_dialog_add_button(GTK_DIALOG(dialog), _("Accept"), COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT);
-	gtk_button_set_image(GTK_BUTTON(button), gtk_image_new_from_stock(GTK_STOCK_APPLY, GTK_ICON_SIZE_BUTTON));
+	/* Create expander for details */
+	expander=gtk_expander_new_with_mnemonic("_Details");
+	gtk_box_pack_start(GTK_BOX(vbox), expander, TRUE, TRUE, 5);
 
-	gtk_dialog_add_button(GTK_DIALOG(dialog), _("Accept for this session"), COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT_FOR_SESSION);
+	/* Create list and set up columns of list */
+	list=gtk_tree_view_new_with_model(GTK_TREE_MODEL(listStore));
+#ifndef HAVE_GTK3
+	gtk_widget_set_size_request(list, -1, 100);
+#endif
 
-	button=gtk_dialog_add_button(GTK_DIALOG(dialog), _("Deny"), COOKIE_PERMISSION_MANAGER_POLICY_BLOCK);
-	gtk_button_set_image(GTK_BUTTON(button), gtk_image_new_from_stock(GTK_STOCK_CANCEL, GTK_ICON_SIZE_BUTTON));
+	renderer=gtk_cell_renderer_text_new();
+	column=gtk_tree_view_column_new_with_attributes(_("Domain"),
+													renderer,
+													"text", DOMAIN_COLUMN,
+													NULL);
+	gtk_tree_view_append_column(GTK_TREE_VIEW(list), column);
 
+	renderer=gtk_cell_renderer_text_new();
+	column=gtk_tree_view_column_new_with_attributes(_("Path"),
+													renderer,
+													"text", PATH_COLUMN,
+													NULL);
+	gtk_tree_view_append_column(GTK_TREE_VIEW(list), column);
+
+	renderer=gtk_cell_renderer_text_new();
+	column=gtk_tree_view_column_new_with_attributes(_("Name"),
+													renderer,
+													"text", NAME_COLUMN,
+													NULL);
+	gtk_tree_view_append_column(GTK_TREE_VIEW(list), column);
+
+	renderer=gtk_cell_renderer_text_new();
+	column=gtk_tree_view_column_new_with_attributes(_("Value"),
+													renderer,
+													"text", VALUE_COLUMN,
+													NULL);
+	g_object_set(G_OBJECT(renderer),
+					"ellipsize", PANGO_ELLIPSIZE_END,
+					"width-chars", 30,
+					NULL);
+	gtk_tree_view_append_column(GTK_TREE_VIEW(list), column);
+
+	renderer=gtk_cell_renderer_text_new();
+	column=gtk_tree_view_column_new_with_attributes(_("Expire date"),
+													renderer,
+													"text", EXPIRE_DATE_COLUMN,
+													NULL);
+	gtk_tree_view_append_column(GTK_TREE_VIEW(list), column);
+
+	scrolled=gtk_scrolled_window_new(NULL, NULL);
+#ifdef HAVE_GTK3
+	gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(scrolled), 100);
+#endif
+	gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+	gtk_container_add(GTK_CONTAINER(scrolled), list);
+	gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(scrolled), GTK_SHADOW_IN);
+	gtk_container_add(GTK_CONTAINER(expander), scrolled);
+
+	gtk_widget_show_all(vbox);
+	gtk_container_add(GTK_CONTAINER(contentArea), vbox);
+
+	/* Set state of expander based on config 'show-details-when-ask' */
+	gtk_expander_set_expanded(GTK_EXPANDER(expander),
+								midori_extension_get_boolean(priv->extension, "show-details-when-ask"));
+	g_signal_connect_swapped(expander, "notify::expanded", G_CALLBACK(_cookie_permission_manager_when_ask_expander_changed), self);
+
+	/* Create buttons for dialog */
+	widget=gtk_dialog_add_button(GTK_DIALOG(dialog), _("_Accept"), COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT);
+	gtk_button_set_image(GTK_BUTTON(widget), gtk_image_new_from_stock(GTK_STOCK_APPLY, GTK_ICON_SIZE_BUTTON));
+
+	gtk_dialog_add_button(GTK_DIALOG(dialog), _("Accept for this _session"), COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT_FOR_SESSION);
+
+	widget=gtk_dialog_add_button(GTK_DIALOG(dialog), _("De_ny"), COOKIE_PERMISSION_MANAGER_POLICY_BLOCK);
+	gtk_button_set_image(GTK_BUTTON(widget), gtk_image_new_from_stock(GTK_STOCK_CANCEL, GTK_ICON_SIZE_BUTTON));
+
+	/* Show confirmation dialog and wait for response of user */
 	response=gtk_dialog_run(GTK_DIALOG(dialog));
 
 	/* Store user's decision in database if it is not a temporary block.
@@ -412,7 +559,6 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 	if(response>=0)
 	{
 		const gchar					*lastDomain=NULL;
-		GSList						*cookies;
 
 		/* Iterate through cookies and store decision for each domain once */
 		for(cookies=sortedCookies; cookies; cookies=cookies->next)
@@ -443,7 +589,6 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 	}
 
 	/* Free up allocated resources */
-	g_free(message);
 	g_slist_free(sortedCookies);
 	gtk_widget_destroy(dialog);
 
