@@ -183,8 +183,6 @@ static void _cookie_permission_manager_open_database(CookiePermissionManager *se
 	}
 
 	// Delete all cookies allowed only in one session
-	g_message("Delete all cookies from cookieJar @%p only allowed for one session", priv->cookieJar);
-
 	success=sqlite3_prepare_v2(priv->database,
 								"SELECT domain FROM policies WHERE value=? ORDER BY domain DESC;",
 								-1,
@@ -207,9 +205,6 @@ static void _cookie_permission_manager_open_database(CookiePermissionManager *se
 			for(cookie=cookies; cookie; cookie->next)
 			{
 				soup_cookie_jar_delete_cookie(priv->cookieJar, (SoupCookie*)cookie->data);
-				g_message("Deleted temporary cookie: domain=%s, name=%s",
-							soup_cookie_get_domain((SoupCookie*)cookie->data),
-							soup_cookie_get_name((SoupCookie*)cookie->data));
 			}
 			soup_cookies_free(cookies);
 			soup_uri_free(uri);
@@ -220,16 +215,13 @@ static void _cookie_permission_manager_open_database(CookiePermissionManager *se
 				if(soup_cookie_domain_matches((SoupCookie*)cookie->data, domain))
 				{
 					soup_cookie_jar_delete_cookie(priv->cookieJar, (SoupCookie*)cookie->data);
-					g_message("Deleted temporary cookie: domain=%s, name=%s",
-								soup_cookie_get_domain((SoupCookie*)cookie->data),
-								soup_cookie_get_name((SoupCookie*)cookie->data));
 				}
 			}
 			soup_cookies_free(cookies);
 #endif
 		}
 	}
-		else g_warning("SQL fails: %s", sqlite3_errmsg(priv->database));
+		else g_warning(_("SQL fails: %s"), sqlite3_errmsg(priv->database));
 
 	sqlite3_finalize(statement);
 
@@ -252,16 +244,13 @@ static gint _cookie_permission_manager_get_policy(CookiePermissionManager *self,
 	/* Lookup policy for cookie domain in database */
 	domain=g_strdup(soup_cookie_get_domain(inCookie));
 	if(*domain=='.') *domain='%';
-g_message("%s: cookieDomain=%s", __func__, domain);
 
 	error=sqlite3_prepare_v2(priv->database,
 								"SELECT domain, value FROM policies WHERE domain LIKE ? ORDER BY domain DESC;",
 								-1,
 								&statement,
 								NULL);
-g_message("%s: stmt=%p, prepare statement=%d", __func__, statement, error);
 	if(statement && error==SQLITE_OK) error=sqlite3_bind_text(statement, 1, domain, -1, NULL);
-g_message("%s: stmt=%p, bind text=%d", __func__, statement, error);
 	if(statement && error==SQLITE_OK)
 	{
 		while(policy==COOKIE_PERMISSION_MANAGER_POLICY_UNDETERMINED &&
@@ -269,16 +258,14 @@ g_message("%s: stmt=%p, bind text=%d", __func__, statement, error);
 		{
 			gchar		*policyDomain=(gchar*)sqlite3_column_text(statement, 0);
 
-g_message("%s: checking domain %s against %s", __func__, domain, policyDomain);
 			if(soup_cookie_domain_matches(inCookie, policyDomain))
 			{
 				policy=sqlite3_column_int(statement, 1);
 				foundPolicy=TRUE;
-g_message("%s: Found domain in database -> policy=%d", __func__, policy);
 			}
 		}
 	}
-		else g_warning("SQL fails: %s", sqlite3_errmsg(priv->database));
+		else g_warning(_("SQL fails: %s"), sqlite3_errmsg(priv->database));
 
 	sqlite3_finalize(statement);
 
@@ -299,11 +286,9 @@ g_message("%s: Found domain in database -> policy=%d", __func__, policy);
 				break;
 
 			default:
-				g_warning("Unknown default policy for cookie to use when policy is unknown. Domain was: %s", domain);
+				g_critical(_("Could not determine global cookie policy to set for domain: %s"), domain);
 				break;
 		}
-		
-		g_message("Policy is undetermined and user set _NOT_ ask to him. Using global settings for cookies set in Midori: %d", policy);
 	}
 
 	/* Release allocated resources */
@@ -448,7 +433,7 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 										cookieDomain,
 										response);
 				success=sqlite3_exec(priv->database, sql, NULL, NULL, &error);
-				if(success!=SQLITE_OK) g_warning("SQL fails: %s", error);
+				if(success!=SQLITE_OK) g_warning(_("SQL fails: %s"), error);
 				if(error) sqlite3_free(error);
 				sqlite3_free(sql);
 
@@ -511,10 +496,6 @@ static void _cookie_permission_manager_on_cookie_changed(CookiePermissionManager
 /* We received the HTTP headers of the request and it contains cookie-managing headers */
 static void _cookie_permission_manager_process_set_cookie_header(SoupMessage *inMessage, gpointer inUserData)
 {
-gchar *_uri=soup_uri_to_string(soup_message_get_uri(inMessage), FALSE);
-g_message("%s: message=%p, uri=%s", __func__, (void*)inMessage, _uri);
-g_free(_uri);
-
 	g_return_if_fail(IS_COOKIE_PERMISSION_MANAGER(inUserData));
 
 	CookiePermissionManager			*self=COOKIE_PERMISSION_MANAGER(inUserData);

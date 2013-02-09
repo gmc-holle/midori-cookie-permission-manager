@@ -107,7 +107,6 @@ static void _cookie_permission_manager_preferences_on_add_domain_clicked(CookieP
 													0, &policy,
 													1, &policyName,
 													-1);
-g_message("%s: domain=%s, policy=%d, policy-name=%s", __func__, realDomain, policy, policyName);
 
 		/* Add domain name and the selected policy to database */
 		sql=sqlite3_mprintf("INSERT OR REPLACE INTO policies (domain, value) VALUES ('%q', %d);",
@@ -125,7 +124,7 @@ g_message("%s: domain=%s, policy=%d, policy-name=%s", __func__, realDomain, poli
 								POLICY_COLUMN, policyName,
 								-1);
 		}
-			else g_error("SQL fails: %s", error);
+			else g_warning(_("SQL fails: %s"), error);
 
 
 		if(error) sqlite3_free(error);
@@ -270,7 +269,7 @@ static void _cookie_permission_manager_preferences_window_fill(CookiePermissionM
 			}
 		}
 	}
-		else g_warning("SQL fails: %s", sqlite3_errmsg(priv->database));
+		else g_warning(_("SQL fails: %s"), sqlite3_errmsg(priv->database));
 
 	sqlite3_finalize(statement);
 }
@@ -296,7 +295,6 @@ static void _cookie_permission_manager_preferences_window_manager_database_chang
 		gint										success;
 
 		databaseFile=sqlite3_db_filename(database, NULL);
-g_message("%s: Opening database %s", __func__, databaseFile);
 		success=sqlite3_open(databaseFile, &priv->database);
 		if(success!=SQLITE_OK)
 		{
@@ -322,10 +320,6 @@ static void _cookie_permission_manager_preferences_window_manager_ask_for_unknow
 																									GParamSpec *inSpec,
 																									gpointer inUserData)
 {
-g_message("%s: self=%p (%s), user-data=%p (%s)",
-			__func__,
-			(void*)self, self ? G_OBJECT_TYPE_NAME(self) : "<nil>",
-			(void*)inUserData, inUserData ? G_OBJECT_TYPE_NAME(inUserData) : "<nil>");
 	CookiePermissionManagerPreferencesWindowPrivate	*priv=self->priv;
 	CookiePermissionManager							*manager=COOKIE_PERMISSION_MANAGER(inUserData);
 	gboolean										doAsk;
@@ -344,13 +338,6 @@ static void _cookie_permission_manager_preferences_window_ask_for_unknown_policy
 {
 	CookiePermissionManagerPreferencesWindowPrivate	*priv=self->priv;
 	gboolean										doAsk;
-
-g_message("%s: self=%p (%s), priv=%p, user-data=%p (%s), manager=%p (%s)",
-			__func__,
-			(void*)self, self ? G_OBJECT_TYPE_NAME(self) : "<nil>",
-			(void*)priv,
-			(void*)inUserData, inUserData ? G_OBJECT_TYPE_NAME(inUserData) : "<nil>",
-			(void*)priv->manager, priv->manager ? G_OBJECT_TYPE_NAME(priv->manager) : "<nil>");
 
 	/* Get toogle state of widget (but block signal for manager) and set in manager */
 	g_signal_handler_block(priv->manager, priv->signalManagerAskForUnknownPolicyID);
@@ -659,7 +646,6 @@ static void cookie_permission_manager_preferences_window_init(CookiePermissionMa
 	gtk_label_set_markup(GTK_LABEL(widget), text);
 	g_free(text);
 	gtk_label_set_line_wrap(GTK_LABEL(widget), TRUE);
-	//gtk_container_add(GTK_CONTAINER(vbox), widget);
 	gtk_box_pack_start(GTK_BOX(vbox), widget, FALSE, FALSE, 4);
 
 	/* Set up model for cookie domain list */
