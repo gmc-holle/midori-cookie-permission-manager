@@ -70,7 +70,7 @@ static void _cookie_permission_manager_preferences_on_add_domain_clicked(CookieP
 																			gpointer *inUserData)
 {
 	CookiePermissionManagerPreferencesWindowPrivate	*priv=self->priv;
-	const gchar										*domain;
+	gchar											*domain;
 	const gchar										*domainStart, *domainEnd;
 	gchar											*realDomain;
 	GtkTreeIter										policyIter;
