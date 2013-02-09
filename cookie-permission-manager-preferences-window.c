@@ -78,7 +78,7 @@ static void _cookie_permission_manager_preferences_on_add_domain_clicked(CookieP
 	g_return_if_fail(priv->database);
 
 	/* Get domain name entered */
-	domain=gtk_entry_get_text(GTK_ENTRY(priv->addDomainEntry));
+	domain=g_hostname_to_ascii(gtk_entry_get_text(GTK_ENTRY(priv->addDomainEntry)));
 
 	/* Trim whitespaces from start and end of entered domain name */
 	domainStart=domain;
@@ -135,6 +135,7 @@ static void _cookie_permission_manager_preferences_on_add_domain_clicked(CookieP
 
 	/* Free allocated resources */
 	g_free(realDomain);
+	g_free(domain);
 }
 
 /* Entry containing domain name which may be added to list has changed */
