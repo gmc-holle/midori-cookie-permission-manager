@@ -46,6 +46,9 @@ struct _CookiePermissionManagerPreferencesWindowPrivate
 	GtkWidget				*deleteButton;
 	GtkWidget				*deleteAllButton;
 	GtkWidget				*askForUnknownPolicyCheckbox;
+	GtkWidget				*addDomainEntry;
+	GtkWidget				*addDomainPolicyCombo;
+	GtkWidget				*addDomainButton;
 
 	gint					signalManagerChangedDatabaseID;
 	gint					signalManagerAskForUnknownPolicyID;
@@ -61,6 +64,151 @@ enum
 
 
 /* IMPLEMENTATION: Private variables and methods */
+
+/* "Add domain"-button was pressed */
+static void _cookie_permission_manager_preferences_on_add_domain_clicked(CookiePermissionManagerPreferencesWindow *self,
+																			gpointer *inUserData)
+{
+	CookiePermissionManagerPreferencesWindowPrivate	*priv=self->priv;
+	const gchar										*domain;
+	const gchar										*domainStart, *domainEnd;
+	gchar											*realDomain;
+	GtkTreeIter										policyIter;
+
+	g_return_if_fail(priv->database);
+
+	/* Get domain name entered */
+	domain=gtk_entry_get_text(GTK_ENTRY(priv->addDomainEntry));
+
+	/* Trim whitespaces from start and end of entered domain name */
+	domainStart=domain;
+	while(*domainStart && g_ascii_isspace(*domainStart)) domainStart++;
+
+	domainEnd=domain+strlen(domain)-1;
+	while(*domainEnd && g_ascii_isspace(*domainEnd)) domainEnd--;
+	if(domainEnd<=domainStart) return;
+
+	/* Seperate domain name from whitespaces */
+	realDomain=g_strndup(domain, domainEnd-domainStart+1);
+	if(!realDomain) return;
+
+	/* Get policy from combo box */
+	if(gtk_combo_box_get_active_iter(GTK_COMBO_BOX(priv->addDomainPolicyCombo), &policyIter))
+	{
+		gchar	*sql;
+		gchar	*error=NULL;
+		gint	success;
+		gint	policy;
+		gchar	*policyName;
+
+		/* Get policy value to set for domain */
+		gtk_tree_model_get(gtk_combo_box_get_model(GTK_COMBO_BOX(priv->addDomainPolicyCombo)),
+													&policyIter,
+													0, &policy,
+													1, &policyName,
+													-1);
+g_message("%s: domain=%s, policy=%d, policy-name=%s", __func__, realDomain, policy, policyName);
+
+		/* Add domain name and the selected policy to database */
+		sql=sqlite3_mprintf("INSERT OR REPLACE INTO policies (domain, value) VALUES ('%q', %d);",
+								realDomain,
+								policy);
+		success=sqlite3_exec(priv->database, sql, NULL, NULL, &error);
+
+		/* Show error message if any */
+		if(success==SQLITE_OK)
+		{
+			gtk_list_store_append(priv->listStore, &policyIter);
+			gtk_list_store_set(priv->listStore,
+								&policyIter,
+								DOMAIN_COLUMN, realDomain,
+								POLICY_COLUMN, policyName,
+								-1);
+		}
+			else g_error("SQL fails: %s", error);
+
+
+		if(error) sqlite3_free(error);
+
+		/* Free allocated resources */
+		sqlite3_free(sql);
+	}
+
+	/* Free allocated resources */
+	g_free(realDomain);
+}
+
+/* Entry containing domain name which may be added to list has changed */
+static void _cookie_permission_manager_preferences_on_add_domain_entry_changed(CookiePermissionManagerPreferencesWindow *self,
+																				GtkEditable *inEditable)
+{
+	CookiePermissionManagerPreferencesWindowPrivate	*priv=self->priv;
+	gchar											*asciiDomain, *checkAsciiDomain;
+	gchar											*asciiDomainStart, *asciiDomainEnd;
+	gint											dots;
+	gboolean										isValid=FALSE;
+
+	/* Get ASCII representation of domain name entered */
+	asciiDomain=g_hostname_to_ascii(gtk_entry_get_text(GTK_ENTRY(priv->addDomainEntry)));
+
+	/* Trim whitespaces from start and end of entered domain name */
+	asciiDomainStart=asciiDomain;
+	while(*asciiDomainStart && g_ascii_isspace(*asciiDomainStart)) asciiDomainStart++;
+
+	asciiDomainEnd=asciiDomain+strlen(asciiDomain)-1;
+	while(*asciiDomainEnd && g_ascii_isspace(*asciiDomainEnd)) asciiDomainEnd--;
+
+	/* We allow only domain names and not cookie domain name so entered name
+	 * must not start with a dot
+	 */
+	checkAsciiDomain=asciiDomainStart;
+	isValid=(*asciiDomainStart!='.' && *asciiDomainEnd!='.');
+
+	/* Now check if ASCII domain name is valid (very very simple check)
+	 * and contains a hostname besides TLD
+	 */
+	dots=0;
+
+	while(*checkAsciiDomain &&
+			checkAsciiDomain<=asciiDomainEnd &&
+			isValid)
+	{
+		/* Check for dot as (at least the first one) seperates hostname from TLD */
+		if(*checkAsciiDomain=='.') dots++;
+			else
+			{
+				/* Check for valid characters in domain name.
+				 * Valid domain name can only contain ASCII alphabetic letters,
+				 * digits (0-9) and hyphens ('-')
+				 */
+				isValid=(g_ascii_isalpha(*checkAsciiDomain) ||
+							g_ascii_isdigit(*checkAsciiDomain) ||
+							*checkAsciiDomain=='-');
+			}
+
+		checkAsciiDomain++;
+	}
+
+	/* If we have not reached the trimmed end of string something must have gone wrong 
+	 * and domain entered is invalid. If domain name entered excluding dots is longer
+	 * than 255 character it is also invalid.
+	 */
+	if(checkAsciiDomain<asciiDomainEnd) isValid=FALSE;
+		else if((checkAsciiDomain-asciiDomainStart-dots)>255) isValid=FALSE;
+
+	/* We need at least one dot in domain name (minimum number of dots to seperate
+	 * hostname from TLD)
+	 */
+	isValid=(isValid && dots>0);
+
+	/* Activate "add" button if hostname (equal to domain name here) is valid */
+	gtk_widget_set_sensitive(priv->addDomainButton, isValid);
+
+	/* Free allocated resources */
+	g_free(asciiDomain);
+}
+
+/* Fill domain list with stored policies */
 static void _cookie_permission_manager_preferences_window_fill(CookiePermissionManagerPreferencesWindow *self)
 {
 	CookiePermissionManagerPreferencesWindowPrivate	*priv=self->priv;
@@ -471,6 +619,8 @@ static void cookie_permission_manager_preferences_window_init(CookiePermissionMa
 	GtkWidget											*vbox;
 	GtkWidget											*hbox;
 	gint												width, height;
+	GtkListStore										*list;
+	GtkTreeIter											listIter;
 
 	priv=self->priv=COOKIE_PERMISSION_MANAGER_PREFERENCES_WINDOW_GET_PRIVATE(self);
 
@@ -504,17 +654,55 @@ static void cookie_permission_manager_preferences_window_init(CookiePermissionMa
 	widget=gtk_label_new(NULL);
 	text=g_strdup_printf(_("Below is a list of all web sites and the policy set for them. "
 							"You can delete policies by marking the entries and clicking on <i>Delete</i>."
-							"You will be asked again which policy to follow for this web sites as soon as you visit them."));
+							"You can also add a policy for a domain manually by entering the domain below, "
+							"choosing the policy and clicking on <i>Add</i>."));
 	gtk_label_set_markup(GTK_LABEL(widget), text);
 	g_free(text);
 	gtk_label_set_line_wrap(GTK_LABEL(widget), TRUE);
-	gtk_container_add(GTK_CONTAINER(vbox), widget);
+	//gtk_container_add(GTK_CONTAINER(vbox), widget);
+	gtk_box_pack_start(GTK_BOX(vbox), widget, FALSE, FALSE, 4);
 
 	/* Set up model for cookie domain list */
 	priv->listStore=gtk_list_store_new(N_COLUMN,
 										G_TYPE_STRING,	/* DOMAIN_COLUMN */
 										G_TYPE_STRING	/* POLICY_COLUMN */);
 
+	/* Set up domain addition widgets */
+#ifdef HAVE_GTK3
+	hbox=gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+	gtk_box_set_homogeneous(GTK_BOX(hbox), FALSE);
+#else
+	hbox=gtk_hbox_new(FALSE, 0);
+#endif
+
+	priv->addDomainEntry=gtk_entry_new();
+	gtk_entry_set_max_length(GTK_ENTRY(priv->addDomainEntry), 64);
+	gtk_container_add(GTK_CONTAINER(hbox), priv->addDomainEntry);
+	g_signal_connect_swapped(priv->addDomainEntry, "changed", G_CALLBACK(_cookie_permission_manager_preferences_on_add_domain_entry_changed), self);
+
+	list=gtk_list_store_new(2, G_TYPE_INT, G_TYPE_STRING);
+	gtk_list_store_append(list, &listIter);
+	gtk_list_store_set(list, &listIter, 0, COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT, 1, _("Accept"), -1);
+	gtk_list_store_append(list, &listIter);
+	gtk_list_store_set(list, &listIter, 0, COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT_FOR_SESSION, 1, _("Accept for session"), -1);
+	gtk_list_store_append(list, &listIter);
+	gtk_list_store_set(list, &listIter, 0, COOKIE_PERMISSION_MANAGER_POLICY_BLOCK, 1, _("Block"), -1);
+
+	priv->addDomainPolicyCombo=gtk_combo_box_new_with_model(GTK_TREE_MODEL(list));
+	gtk_combo_box_set_active(GTK_COMBO_BOX(priv->addDomainPolicyCombo), 0);
+	gtk_container_add(GTK_CONTAINER(hbox), priv->addDomainPolicyCombo);
+
+	renderer=gtk_cell_renderer_text_new();
+	gtk_cell_layout_pack_start(GTK_CELL_LAYOUT(priv->addDomainPolicyCombo), renderer, TRUE);
+	gtk_cell_layout_add_attribute(GTK_CELL_LAYOUT(priv->addDomainPolicyCombo), renderer, "text", 1);
+	gtk_object_destroy(GTK_OBJECT(renderer));
+
+	priv->addDomainButton=gtk_button_new_from_stock(GTK_STOCK_ADD);
+	gtk_widget_set_sensitive(priv->addDomainButton, FALSE);
+	gtk_container_add(GTK_CONTAINER(hbox), priv->addDomainButton);
+	g_signal_connect_swapped(priv->addDomainButton, "clicked", G_CALLBACK(_cookie_permission_manager_preferences_on_add_domain_clicked), self);
+
+	gtk_box_pack_start(GTK_BOX(vbox), hbox, TRUE, TRUE, 5);
 
 	/* Set up cookie domain list */
 	priv->list=gtk_tree_view_new_with_model(GTK_TREE_MODEL(priv->listStore));
@@ -578,10 +766,6 @@ static void cookie_permission_manager_preferences_window_init(CookiePermissionMa
 																G_CALLBACK(_cookie_permission_manager_preferences_window_ask_for_unknown_policy_changed),
 																self);
 	gtk_box_pack_start(GTK_BOX(vbox), priv->askForUnknownPolicyCheckbox, TRUE, TRUE, 5);
-g_message("%s: askForUnknownPolicyCheckbox=%p (%s), signal=%d",
-			__func__,
-			(void*)priv->askForUnknownPolicyCheckbox, priv->askForUnknownPolicyCheckbox ? G_OBJECT_TYPE_NAME(priv->askForUnknownPolicyCheckbox) : "<nil>",
-			priv->signalAskForUnknownPolicyID);
 
 	/* Finalize setup of content area */
 	gtk_container_add(GTK_CONTAINER(priv->contentArea), vbox);
