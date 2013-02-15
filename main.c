@@ -59,8 +59,8 @@ MidoriExtension *extension_init(void)
 {
 	/* Set up extension */
 	MidoriExtension	*extension=g_object_new(MIDORI_TYPE_EXTENSION,
-												"name", _("Cookie Securiry Manager"),
-												"description", _("Manage cookie permission"),
+												"name", _("Cookie Security Manager"),
+												"description", _("Manage cookie permission per site"),
 												"version", "0.1" MIDORI_VERSION_SUFFIX,
 												"authors", "Stephan Haller <nomad@froevel.de>",
 												NULL);
