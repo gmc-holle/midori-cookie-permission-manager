@@ -69,6 +69,8 @@ enum
 };
 
 /* IMPLEMENTATION: Private variables and methods */
+
+/* Show common error dialog */
 static void _cookie_permission_manager_error(CookiePermissionManager *self, const gchar *inReason)
 {
 	GtkWidget		*dialog;
