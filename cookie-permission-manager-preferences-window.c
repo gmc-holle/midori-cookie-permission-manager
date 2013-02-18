@@ -682,7 +682,6 @@ static void cookie_permission_manager_preferences_window_init(CookiePermissionMa
 	renderer=gtk_cell_renderer_text_new();
 	gtk_cell_layout_pack_start(GTK_CELL_LAYOUT(priv->addDomainPolicyCombo), renderer, TRUE);
 	gtk_cell_layout_add_attribute(GTK_CELL_LAYOUT(priv->addDomainPolicyCombo), renderer, "text", 1);
-	gtk_object_destroy(GTK_OBJECT(renderer));
 
 	priv->addDomainButton=gtk_button_new_from_stock(GTK_STOCK_ADD);
 	gtk_widget_set_sensitive(priv->addDomainButton, FALSE);
