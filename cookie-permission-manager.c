@@ -374,11 +374,43 @@ static void _cookie_permission_manager_when_ask_expander_changed(CookiePermissio
 	midori_extension_set_boolean(self->priv->extension, "show-details-when-ask", gtk_expander_get_expanded(expander));
 }
 
+static gboolean _cookie_permission_manager_on_infobar_webview_navigate(WebKitWebView *inView,
+																		WebKitWebFrame *inFrame,
+																		WebKitNetworkRequest *inRequest,
+																		WebKitWebNavigationAction *inAction,
+																		WebKitWebPolicyDecision *inDecision,
+																		gpointer inUserData)
+{
+	/* Destroy info bar - that calls another callback which quits main loop */
+	GtkWidget		*infobar=GTK_WIDGET(inUserData);
+
+	gtk_widget_destroy(infobar);
+
+	/* Let the default handler decide */
+	return(FALSE);
+}
+
+static void _cookie_permission_manager_on_infobar_destroy(GtkWidget* inInfobar,
+															gpointer inUserData)
+{
+	CookiePermissionManagerModalInfobar		*modalInfo=(CookiePermissionManagerModalInfobar*)inUserData;
+
+	/* Store response */
+	modalInfo->response=COOKIE_PERMISSION_MANAGER_POLICY_UNDETERMINED;
+
+	/* Quit main loop */
+	if(g_main_loop_is_running(modalInfo->mainLoop)) g_main_loop_quit(modalInfo->mainLoop);
+}
+
 static void _cookie_permission_manager_on_infobar_policy_decision(GtkWidget* inInfobar,
 																	gint inResponse,
 																	gpointer inUserData)
 {
-	CookiePermissionManagerModalInfobar		*modalInfo=(CookiePermissionManagerModalInfobar*)inUserData;
+	CookiePermissionManagerModalInfobar		*modalInfo;
+g_message("%s: response=%d", __func__, inResponse);
+
+	/* Get modal info struct */
+	modalInfo=(CookiePermissionManagerModalInfobar*)g_object_get_data(G_OBJECT(inInfobar), "cookie-permission-manager-infobar-data");
 
 	/* Store response */
 	modalInfo->response=inResponse;
@@ -417,8 +449,11 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 	gchar									*text;
 	gint									numberDomains, numberCookies;
 	GSList									*sortedCookies, *cookies;
-	MidoriView								*view;
+	WebKitWebView							*webkitView;
 	CookiePermissionManagerModalInfobar		modalInfo;
+
+	/* Get webkit view of midori view */
+	webkitView=WEBKIT_WEB_VIEW(midori_view_get_web_view(inView));
 
 	/* Create a copy of cookies and sort them */
 	sortedCookies=_cookie_permission_manager_get_number_domains_and_cookies(self,
@@ -480,13 +515,19 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 										GTK_MESSAGE_QUESTION,
 										text,
 										G_CALLBACK(_cookie_permission_manager_on_infobar_policy_decision),
-										&modalInfo,
+										NULL,
 										_("_Accept"), COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT,
 										_("Accept for this _session"), COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT_FOR_SESSION,
 										_("De_ny"), COOKIE_PERMISSION_MANAGER_POLICY_BLOCK,
 										_("Deny _this time"), COOKIE_PERMISSION_MANAGER_POLICY_UNDETERMINED,
 										NULL);
 	g_free(text);
+
+	/* midori_view_add_info_bar() in version 0.4.8 expects a GObject as user data
+	 * but I don't want to create an GObject just for a simple struct. So set object
+	 * data by our own
+	 */
+	g_object_set_data(G_OBJECT(infobar), "cookie-permission-manager-infobar-data", &modalInfo);
 
 /* FIXME: Find a way to add "details" widget */
 #if 0
@@ -560,7 +601,12 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 	g_signal_connect_swapped(expander, "notify::expanded", G_CALLBACK(_cookie_permission_manager_when_ask_expander_changed), self);
 #endif
 
+	/* Show all widgets of info bar */
 	gtk_widget_show_all(infobar);
+
+	/* Connect signals to quit main loop */
+	g_signal_connect(webkitView, "navigation-policy-decision-requested", G_CALLBACK(_cookie_permission_manager_on_infobar_webview_navigate), infobar);
+	g_signal_connect(infobar, "destroy", G_CALLBACK(_cookie_permission_manager_on_infobar_destroy), &modalInfo);
 
 	/* Let info bar be modal */
 	modalInfo.mainLoop=g_main_loop_new(NULL, FALSE);
@@ -571,12 +617,15 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 
 	g_main_loop_unref(modalInfo.mainLoop);
 
+	/* Disconnect signal handler to webkit's web view  */
+	g_signal_handlers_disconnect_by_func(webkitView, G_CALLBACK(_cookie_permission_manager_on_infobar_destroy), &modalInfo);
+
 	/* Store user's decision in database if it is not a temporary block.
 	 * We use the already sorted list of cookies to prevent multiple
 	 * updates of database for the same domain. This sorted list is a copy
 	 * to avoid a reorder of cookies
 	 */
-	if(modalInfo.response>=0)
+	if(modalInfo.response!=COOKIE_PERMISSION_MANAGER_POLICY_UNDETERMINED)
 	{
 		const gchar					*lastDomain=NULL;
 
@@ -612,7 +661,8 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 	g_slist_free(sortedCookies);
 
 	/* Return response */
-	return(modalInfo.response);
+	return(modalInfo.response==COOKIE_PERMISSION_MANAGER_POLICY_UNDETERMINED ?
+			COOKIE_PERMISSION_MANAGER_POLICY_BLOCK : modalInfo.response);
 }
 
 /* A cookie was changed outside a request (e.g. Javascript) */
