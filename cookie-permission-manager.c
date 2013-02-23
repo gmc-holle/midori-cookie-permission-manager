@@ -407,7 +407,6 @@ static void _cookie_permission_manager_on_infobar_policy_decision(GtkWidget* inI
 																	gpointer inUserData)
 {
 	CookiePermissionManagerModalInfobar		*modalInfo;
-g_message("%s: response=%d", __func__, inResponse);
 
 	/* Get modal info struct */
 	modalInfo=(CookiePermissionManagerModalInfobar*)g_object_get_data(G_OBJECT(inInfobar), "cookie-permission-manager-infobar-data");
