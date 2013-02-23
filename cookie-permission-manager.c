@@ -47,10 +47,6 @@ struct _CookiePermissionManagerPrivate
 	sqlite3							*database;
 	gboolean						askForUnknownPolicy;
 
-	/* Session related */
-	void(*oldRequestQueued)(SoupSessionFeature *inFeature, SoupSession *inSession, SoupMessage *inMessage);
-	void(*oldRequestUnqueued)(SoupSessionFeature *inFeature, SoupSession *inSession, SoupMessage *inMessage);
-
 	/* Cookie jar related */
 	SoupSession						*session;
 	SoupCookieJar					*cookieJar;
@@ -67,6 +63,14 @@ enum
 	EXPIRE_DATE_COLUMN,
 	N_COLUMN
 };
+
+struct _CookiePermissionManagerModalInfobar
+{
+	GMainLoop						*mainLoop;
+	gint							response;
+};
+
+typedef struct _CookiePermissionManagerModalInfobar		CookiePermissionManagerModalInfobar;
 
 /* IMPLEMENTATION: Private variables and methods */
 
@@ -370,25 +374,51 @@ static void _cookie_permission_manager_when_ask_expander_changed(CookiePermissio
 	midori_extension_set_boolean(self->priv->extension, "show-details-when-ask", gtk_expander_get_expanded(expander));
 }
 
+static void _cookie_permission_manager_on_infobar_policy_decision(GtkWidget* inInfobar,
+																	gint inResponse,
+																	gpointer inUserData)
+{
+	CookiePermissionManagerModalInfobar		*modalInfo=(CookiePermissionManagerModalInfobar*)inUserData;
+
+	/* Store response */
+	modalInfo->response=inResponse;
+
+	/* Quit main loop */
+	if(g_main_loop_is_running(modalInfo->mainLoop)) g_main_loop_quit(modalInfo->mainLoop);
+}
+
 static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *self,
+														MidoriView *inView,
+														SoupMessage *inMessage,
 														GSList *inUnknownCookies)
 {
-	CookiePermissionManagerPrivate	*priv=self->priv;
-	GtkWidget						*dialog;
-	GtkWidget						*widget;
-	GtkWidget						*contentArea;
-	GtkWidget						*vbox, *hbox;
-	GtkWidget						*expander;
-	GtkListStore					*listStore;
-	GtkTreeIter						listIter;
-	GtkWidget						*scrolled;
-	GtkWidget						*list;
-	GtkCellRenderer					*renderer;
-	GtkTreeViewColumn				*column;
-	gchar							*text;
-	gint							numberDomains, numberCookies;
-	gint							response;
-	GSList							*sortedCookies, *cookies;
+	/* Ask user for policy of unkndown domains in an undistracting way.
+	 * The idea is to put the message not in a modal window but into midori's info bar.
+	 * Then we'll set up our own GMainLoop to simulate a modal info bar. We need to
+	 * connect to all possible signals of info bar, web view and so on to handle user's
+	 * decision and to get out of our own GMainLoop. After that webkit resumes processing
+	 * data.
+	 */
+	CookiePermissionManagerPrivate			*priv=self->priv;
+	GtkWidget								*infobar;
+/* FIXME: Find a way to add "details" widget */
+#if 0
+	GtkWidget								*widget;
+	GtkWidget								*contentArea;
+	GtkWidget								*vbox, *hbox;
+	GtkWidget								*expander;
+	GtkListStore							*listStore;
+	GtkTreeIter								listIter;
+	GtkWidget								*scrolled;
+	GtkWidget								*list;
+	GtkCellRenderer							*renderer;
+	GtkTreeViewColumn						*column;
+#endif
+	gchar									*text;
+	gint									numberDomains, numberCookies;
+	GSList									*sortedCookies, *cookies;
+	MidoriView								*view;
+	CookiePermissionManagerModalInfobar		modalInfo;
 
 	/* Create a copy of cookies and sort them */
 	sortedCookies=_cookie_permission_manager_get_number_domains_and_cookies(self,
@@ -396,6 +426,8 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 																			&numberDomains,
 																			&numberCookies);
 
+/* FIXME: Find a way to add "details" widget */
+#if 0
 	/* Create list model and fill in data */
 	listStore=gtk_list_store_new(N_COLUMN,
 									G_TYPE_STRING,	/* DOMAIN_COLUMN */
@@ -409,7 +441,8 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 		SoupCookie				*cookie=(SoupCookie*)cookies->data;
 		SoupDate				*cookieDate=soup_cookie_get_expires(cookie);
 
-		text=soup_date_to_string(cookieDate, SOUP_DATE_HTTP);
+		if(cookieDate) text=soup_date_to_string(cookieDate, SOUP_DATE_HTTP);
+			else text=g_strdup(_("Till session end"));
 
 		gtk_list_store_append(listStore, &listIter);
 		gtk_list_store_set(listStore,
@@ -423,34 +456,9 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 
 		g_free(text);
 	}
-
-	/* Create dialog with text, icon, title and so on */
-	dialog=gtk_dialog_new();
-
-	gtk_window_set_title(GTK_WINDOW(dialog), _("Confirm storing cookie"));
-	gtk_window_set_icon_name(GTK_WINDOW (dialog), "midori");
-
-	/* Get content area and layout widgets */
-	contentArea=gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-
-#ifdef HAVE_GTK3
-	vbox=gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-	gtk_box_set_homogeneous(GTK_BOX(vbox), FALSE);
-#else
-	vbox=gtk_vbox_new(FALSE, 0);
 #endif
 
 	/* Create description text */
-#ifdef HAVE_GTK3
-	hbox=gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-	gtk_box_set_homogeneous(GTK_BOX(hbox), FALSE);
-#else
-	hbox=gtk_hbox_new(FALSE, 0);
-#endif
-
-	widget=gtk_image_new_from_stock(GTK_STOCK_DIALOG_QUESTION, GTK_ICON_SIZE_DIALOG);
-	gtk_box_pack_start(GTK_BOX(hbox), widget, FALSE, FALSE, 4);
-
 	if(numberDomains==1)
 	{
 		const gchar					*cookieDomain=soup_cookie_get_domain((SoupCookie*)sortedCookies->data);
@@ -467,17 +475,27 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 			text=g_strdup_printf(_("Multiple websites want to store %d cookies in total."), numberCookies);
 		}
 
-	widget=gtk_label_new(NULL);
-	gtk_label_set_markup(GTK_LABEL(widget), text);
-	gtk_label_set_line_wrap(GTK_LABEL(widget), TRUE);
-	gtk_box_pack_start(GTK_BOX(hbox), widget, FALSE, FALSE, 4);
+	/* Create info bar message and buttons */
+	infobar=midori_view_add_info_bar(inView,
+										GTK_MESSAGE_QUESTION,
+										text,
+										G_CALLBACK(_cookie_permission_manager_on_infobar_policy_decision),
+										&modalInfo,
+										_("_Accept"), COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT,
+										_("Accept for this _session"), COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT_FOR_SESSION,
+										_("De_ny"), COOKIE_PERMISSION_MANAGER_POLICY_BLOCK,
+										_("Deny _this time"), COOKIE_PERMISSION_MANAGER_POLICY_UNDETERMINED,
+										NULL);
 	g_free(text);
 
-	gtk_box_pack_start(GTK_BOX(vbox), hbox, FALSE, FALSE, 4);
-
-	/* Create expander for details */
-	expander=gtk_expander_new_with_mnemonic("_Details");
-	gtk_box_pack_start(GTK_BOX(vbox), expander, TRUE, TRUE, 5);
+/* FIXME: Find a way to add "details" widget */
+#if 0
+	/* Get content area of infobar */
+#if HAVE_GTK_INFO_BAR
+	contentArea=gtk_info_bar_get_content_area(GTK_INFO_BAR(infobar));
+#else
+	contentArea=infobar;
+#endif
 
 	/* Create list and set up columns of list */
 	list=gtk_tree_view_new_with_model(GTK_TREE_MODEL(listStore));
@@ -540,25 +558,25 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 	gtk_expander_set_expanded(GTK_EXPANDER(expander),
 								midori_extension_get_boolean(priv->extension, "show-details-when-ask"));
 	g_signal_connect_swapped(expander, "notify::expanded", G_CALLBACK(_cookie_permission_manager_when_ask_expander_changed), self);
+#endif
 
-	/* Create buttons for dialog */
-	widget=gtk_dialog_add_button(GTK_DIALOG(dialog), _("_Accept"), COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT);
-	gtk_button_set_image(GTK_BUTTON(widget), gtk_image_new_from_stock(GTK_STOCK_APPLY, GTK_ICON_SIZE_BUTTON));
+	gtk_widget_show_all(infobar);
 
-	gtk_dialog_add_button(GTK_DIALOG(dialog), _("Accept for this _session"), COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT_FOR_SESSION);
+	/* Let info bar be modal */
+	modalInfo.mainLoop=g_main_loop_new(NULL, FALSE);
 
-	widget=gtk_dialog_add_button(GTK_DIALOG(dialog), _("De_ny"), COOKIE_PERMISSION_MANAGER_POLICY_BLOCK);
-	gtk_button_set_image(GTK_BUTTON(widget), gtk_image_new_from_stock(GTK_STOCK_CANCEL, GTK_ICON_SIZE_BUTTON));
+	GDK_THREADS_LEAVE();
+	g_main_loop_run(modalInfo.mainLoop);
+	GDK_THREADS_ENTER();
 
-	/* Show confirmation dialog and wait for response of user */
-	response=gtk_dialog_run(GTK_DIALOG(dialog));
+	g_main_loop_unref(modalInfo.mainLoop);
 
 	/* Store user's decision in database if it is not a temporary block.
 	 * We use the already sorted list of cookies to prevent multiple
 	 * updates of database for the same domain. This sorted list is a copy
 	 * to avoid a reorder of cookies
 	 */
-	if(response>=0)
+	if(modalInfo.response>=0)
 	{
 		const gchar					*lastDomain=NULL;
 
@@ -579,7 +597,7 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 
 				sql=sqlite3_mprintf("INSERT OR REPLACE INTO policies (domain, value) VALUES ('%q', %d);",
 										cookieDomain,
-										response);
+										modalInfo.response);
 				success=sqlite3_exec(priv->database, sql, NULL, NULL, &error);
 				if(success!=SQLITE_OK) g_warning(_("SQL fails: %s"), error);
 				if(error) sqlite3_free(error);
@@ -592,10 +610,9 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 
 	/* Free up allocated resources */
 	g_slist_free(sortedCookies);
-	gtk_widget_destroy(dialog);
 
-	/* Return user's selection */
-	return(response>=0 ? response : COOKIE_PERMISSION_MANAGER_POLICY_BLOCK);
+	/* Return response */
+	return(modalInfo.response);
 }
 
 /* A cookie was changed outside a request (e.g. Javascript) */
@@ -604,9 +621,6 @@ static void _cookie_permission_manager_on_cookie_changed(CookiePermissionManager
 															SoupCookie *inNewCookie,
 															SoupCookieJar *inCookieJar)
 {
-	GSList			*newCookies;
-	gint			newCookiePolicy;
-
 	/* Do not check changed cookies because they must have been allowed before.
 	 * Also do not check removed cookies because they are removed ;)
 	 */
@@ -615,33 +629,30 @@ static void _cookie_permission_manager_on_cookie_changed(CookiePermissionManager
 	/* New cookie is a new cookie so check */
 	switch(_cookie_permission_manager_get_policy(self, inNewCookie))
 	{
-		case COOKIE_PERMISSION_MANAGER_POLICY_BLOCK:
-			soup_cookie_jar_delete_cookie(inCookieJar, inNewCookie);
+		case COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT:
+		case COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT_FOR_SESSION:
 			break;
 
 		case COOKIE_PERMISSION_MANAGER_POLICY_UNDETERMINED:
-			newCookies=g_slist_prepend(NULL, inNewCookie);
-			newCookiePolicy=_cookie_permission_manager_ask_for_policy(self, newCookies);
-			if(newCookiePolicy==COOKIE_PERMISSION_MANAGER_POLICY_BLOCK)
-			{
-				/* Free cookie because it should be blocked */
-				soup_cookie_jar_delete_cookie(inCookieJar, inNewCookie);
-			}
-				else
-				{
-					/* Cookie was accept so do nothing (it is already added) */
-				}
-			g_slist_free(newCookies);
-			break;
+			/* Fallthrough!
+			 * The problem here is that we don't know the view to ask user
+			 * for policy to follow for this cookie domain. Therefore we
+			 * delete the cookie from jar and assume that we will be asked
+			 * again in _cookie_permission_manager_on_response_received().
+			 */
 
-		case COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT:
-		case COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT_FOR_SESSION:
+		default:
+			soup_cookie_jar_delete_cookie(inCookieJar, inNewCookie);
 			break;
 	}
 }
 
 /* We received the HTTP headers of the request and it contains cookie-managing headers */
-static void _cookie_permission_manager_process_set_cookie_header(SoupMessage *inMessage, gpointer inUserData)
+static void _cookie_permission_manager_on_response_received(WebKitWebView *inView,
+															WebKitWebFrame *inFrame,
+															WebKitWebResource *inResource,
+															WebKitNetworkResponse *inResponse,
+															gpointer inUserData)
 {
 	g_return_if_fail(IS_COOKIE_PERMISSION_MANAGER(inUserData));
 
@@ -652,18 +663,23 @@ static void _cookie_permission_manager_process_set_cookie_header(SoupMessage *in
 	SoupURI							*firstParty;
 	SoupCookieJarAcceptPolicy		cookiePolicy;
 	gint							unknownCookiesPolicy;
+	SoupMessage						*message;
 
 	/* If policy is to deny all cookies return immediately */
 	cookiePolicy=soup_cookie_jar_get_accept_policy(priv->cookieJar);
 	if(cookiePolicy==SOUP_COOKIE_JAR_ACCEPT_NEVER) return;
+
+	/* Get SoupMessage */
+	message=webkit_network_response_get_message(inResponse);
+	if(!message || !SOUP_IS_MESSAGE(message)) return;
 
 	/* Iterate through cookies in response and check if they should be
 	 * blocked (remove from cookies list) or accepted (added to cookie jar).
 	 * If we could not determine what to do collect these cookies and
 	 * ask user
 	 */
-	newCookies=soup_cookies_from_response(inMessage);
-	firstParty=soup_message_get_first_party(inMessage);
+	newCookies=soup_cookies_from_response(message);
+	firstParty=soup_message_get_first_party(message);
 	for(cookie=newCookies; cookie; cookie=cookie->next)
 	{
 		switch(_cookie_permission_manager_get_policy(self, cookie->data))
@@ -712,7 +728,13 @@ static void _cookie_permission_manager_process_set_cookie_header(SoupMessage *in
 	 */
 	if(g_slist_length(unknownCookies)>0)
 	{
-		unknownCookiesPolicy=_cookie_permission_manager_ask_for_policy(self, unknownCookies);
+		/* Get view */
+		MidoriView					*view;
+
+		view=MIDORI_VIEW(g_object_get_data(G_OBJECT(inView), "midori-view"));
+
+		/* Ask for user's decision */
+		unknownCookiesPolicy=_cookie_permission_manager_ask_for_policy(self, view, message, unknownCookies);
 		if(unknownCookiesPolicy==COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT ||
 			unknownCookiesPolicy==COOKIE_PERMISSION_MANAGER_POLICY_ACCEPT_FOR_SESSION)
 		{
@@ -744,35 +766,52 @@ static void _cookie_permission_manager_process_set_cookie_header(SoupMessage *in
 	g_slist_free(newCookies);
 }
 
-/* A request was started and is in queue now */
-static void _cookie_permission_manager_request_queued(SoupSessionFeature *inFeature, SoupSession *inSession, SoupMessage *inMessage)
+/* A tab to a browser was added */
+static void _cookie_permission_manager_on_add_tab(CookiePermissionManager *self, MidoriView *inView, gpointer inUserData)
 {
-	/* Get class instance */
-	CookiePermissionManager		*manager=g_object_get_data(G_OBJECT(inFeature), "cookie-permission-manager");
+	/* Listen to starting network requests */
+	WebKitWebView	*webkitView=WEBKIT_WEB_VIEW(midori_view_get_web_view(inView));
 
-	/* Listen to "got-headers" signals and register handlers for
-	 * checking cookie-managing headers in HTTP stream
-	 */
-	soup_message_add_header_handler(inMessage,
-										"got-headers",
-										"Set-Cookie",
-										G_CALLBACK(_cookie_permission_manager_process_set_cookie_header),
-										manager);
-
-	soup_message_add_header_handler(inMessage,
-										"got-headers",
-										"Set-Cookie2",
-										G_CALLBACK(_cookie_permission_manager_process_set_cookie_header),
-										manager);
+	g_object_set_data(G_OBJECT(webkitView), "midori-view", inView);
+	g_signal_connect(webkitView, "resource-response-received", G_CALLBACK(_cookie_permission_manager_on_response_received), self);
 }
 
-/* Request has loaded and was unqueued */
-static void _cookie_permission_manager_request_unqueued(SoupSessionFeature *inFeature, SoupSession *inSession, SoupMessage *inMessage)
+/* A browser window was added */
+static void _cookie_permission_manager_on_add_browser(CookiePermissionManager *self,
+														MidoriBrowser *inBrowser,
+														gpointer inUserData)
 {
-	/* Stop listening to HTTP stream */
-	g_signal_handlers_disconnect_by_func(inMessage, _cookie_permission_manager_process_set_cookie_header, inFeature);
+	GList	*tabs, *iter;
+
+	/* Set up all current available tabs in browser */
+	tabs=midori_browser_get_tabs(inBrowser);
+	for(iter=tabs; iter; iter=g_list_next(iter))
+	{
+		_cookie_permission_manager_on_add_tab(self, iter->data, inBrowser);
+	}
+	g_list_free(tabs);
+
+	/* Listen to new tabs opened in browser and existing ones closed */
+	g_signal_connect_swapped(inBrowser, "add-tab", G_CALLBACK(_cookie_permission_manager_on_add_tab), self);
 }
 
+/* Application property has changed */
+static void _cookie_permission_manager_on_application_changed(CookiePermissionManager *self)
+{
+	CookiePermissionManagerPrivate		*priv=COOKIE_PERMISSION_MANAGER(self)->priv;
+	GList								*browsers, *iter;
+
+	/* Set up all current open browser windows */
+	browsers=midori_app_get_browsers(priv->application);
+	for(iter=browsers; iter; iter=g_list_next(iter))
+	{
+		_cookie_permission_manager_on_add_browser(self, MIDORI_BROWSER(iter->data), priv->application);
+	}
+	g_list_free(browsers);
+
+	/* Listen to new browser windows opened and existing ones closed */
+	g_signal_connect_swapped(priv->application, "add-browser", G_CALLBACK(_cookie_permission_manager_on_add_browser), self);
+}
 /* IMPLEMENTATION: GObject */
 
 /* Finalize this object */
@@ -789,9 +828,6 @@ static void cookie_permission_manager_finalize(GObject *inObject)
 	}
 
 	g_signal_handler_disconnect(priv->cookieJar, priv->cookieJarChangedID);
-
-	priv->featureIface->request_queued=priv->oldRequestQueued;
-	priv->featureIface->request_unqueued=priv->oldRequestUnqueued;
 
 	g_object_steal_data(G_OBJECT(priv->cookieJar), "cookie-permission-manager");
 
@@ -817,6 +853,7 @@ static void cookie_permission_manager_set_property(GObject *inObject,
 
 		case PROP_APPLICATION:
 			self->priv->application=g_value_get_object(inValue);
+			_cookie_permission_manager_on_application_changed(self);
 			break;
 
 		case PROP_ASK_FOR_UNKNOWN_POLICY:
@@ -928,13 +965,8 @@ static void cookie_permission_manager_init(CookiePermissionManager *self)
 	priv->featureIface=SOUP_SESSION_FEATURE_GET_CLASS(priv->cookieJar);
 	g_object_set_data(G_OBJECT(priv->cookieJar), "cookie-permission-manager", self);
 
-	priv->oldRequestQueued=priv->featureIface->request_queued;
-	priv->oldRequestUnqueued=priv->featureIface->request_unqueued;
-
-	priv->featureIface->request_queued=_cookie_permission_manager_request_queued;
-	priv->featureIface->request_unqueued=_cookie_permission_manager_request_unqueued;
-
 	/* Listen to changed cookies set or changed by other sources like javascript */
+	// FIXME
 	priv->cookieJarChangedID=g_signal_connect_swapped(priv->cookieJar, "changed", G_CALLBACK(_cookie_permission_manager_on_cookie_changed), self);
 }
 
