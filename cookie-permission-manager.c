@@ -395,9 +395,6 @@ static void _cookie_permission_manager_on_infobar_destroy(GtkWidget* inInfobar,
 {
 	CookiePermissionManagerModalInfobar		*modalInfo=(CookiePermissionManagerModalInfobar*)inUserData;
 
-	/* Store response */
-	modalInfo->response=COOKIE_PERMISSION_MANAGER_POLICY_UNDETERMINED;
-
 	/* Quit main loop */
 	if(g_main_loop_is_running(modalInfo->mainLoop)) g_main_loop_quit(modalInfo->mainLoop);
 }
@@ -607,7 +604,8 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 	g_signal_connect(webkitView, "navigation-policy-decision-requested", G_CALLBACK(_cookie_permission_manager_on_infobar_webview_navigate), infobar);
 	g_signal_connect(infobar, "destroy", G_CALLBACK(_cookie_permission_manager_on_infobar_destroy), &modalInfo);
 
-	/* Let info bar be modal */
+	/* Let info bar be modal and set response to default */
+	modalInfo.response=COOKIE_PERMISSION_MANAGER_POLICY_UNDETERMINED;
 	modalInfo.mainLoop=g_main_loop_new(NULL, FALSE);
 
 	GDK_THREADS_LEAVE();
