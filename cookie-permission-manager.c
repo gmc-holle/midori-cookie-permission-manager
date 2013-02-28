@@ -617,7 +617,7 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 	modalInfo.mainLoop=NULL;
 
 	/* Disconnect signal handler to webkit's web view  */
-	g_signal_handlers_disconnect_by_func(webkitView, G_CALLBACK(_cookie_permission_manager_on_infobar_webview_navigate), &modalInfo);
+	g_signal_handlers_disconnect_by_func(webkitView, G_CALLBACK(_cookie_permission_manager_on_infobar_webview_navigate), infobar);
 
 	/* Store user's decision in database if it is not a temporary block.
 	 * We use the already sorted list of cookies to prevent multiple
