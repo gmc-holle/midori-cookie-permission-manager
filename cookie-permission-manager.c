@@ -613,7 +613,9 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 	GDK_THREADS_ENTER();
 
 	g_main_loop_unref(modalInfo.mainLoop);
+
 	modalInfo.mainLoop=NULL;
+	modalInfo.infobar=NULL;
 
 	/* Disconnect signal handler to webkit's web view  */
 	g_signal_handlers_disconnect_by_func(webkitView, G_CALLBACK(_cookie_permission_manager_on_infobar_webview_navigate), &modalInfo);
