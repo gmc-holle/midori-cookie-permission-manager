@@ -13,6 +13,9 @@
 
 #include <errno.h>
 
+/* Remove next line if we found a way to show details in infobar */
+#define NO_INFOBAR_DETAILS
+
 /* Define this class in GObject system */
 G_DEFINE_TYPE(CookiePermissionManager,
 				cookie_permission_manager,
@@ -365,6 +368,8 @@ static GSList* _cookie_permission_manager_get_number_domains_and_cookies(CookieP
 	return(sortedList);
 }
 
+/* FIXME: Find a way to add "details" widget */
+#ifndef NO_INFOBAR_DETAILS
 static void _cookie_permission_manager_when_ask_expander_changed(CookiePermissionManager *self,
 																	GParamSpec *inSpec,
 																	gpointer inUserData)
@@ -373,6 +378,7 @@ static void _cookie_permission_manager_when_ask_expander_changed(CookiePermissio
 
 	midori_extension_set_boolean(self->priv->extension, "show-details-when-ask", gtk_expander_get_expanded(expander));
 }
+#endif
 
 static gboolean _cookie_permission_manager_on_infobar_webview_navigate(WebKitWebView *inView,
 																		WebKitWebFrame *inFrame,
@@ -430,7 +436,7 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 	CookiePermissionManagerPrivate			*priv=self->priv;
 	GtkWidget								*infobar;
 /* FIXME: Find a way to add "details" widget */
-#if 0
+#ifndef NO_INFOBAR_DETAILS
 	GtkWidget								*widget;
 	GtkWidget								*contentArea;
 	GtkWidget								*vbox, *hbox;
@@ -458,7 +464,7 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 																			&numberCookies);
 
 /* FIXME: Find a way to add "details" widget */
-#if 0
+#ifndef NO_INFOBAR_DETAILS
 	/* Create list model and fill in data */
 	listStore=gtk_list_store_new(N_COLUMN,
 									G_TYPE_STRING,	/* DOMAIN_COLUMN */
@@ -526,7 +532,7 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 	g_object_set_data(G_OBJECT(infobar), "cookie-permission-manager-infobar-data", &modalInfo);
 
 /* FIXME: Find a way to add "details" widget */
-#if 0
+#ifndef NO_INFOBAR_DETAILS
 	/* Get content area of infobar */
 #if HAVE_GTK_INFO_BAR
 	contentArea=gtk_info_bar_get_content_area(GTK_INFO_BAR(infobar));
@@ -861,12 +867,17 @@ static void _cookie_permission_manager_on_application_changed(CookiePermissionMa
 	/* Listen to new browser windows opened and existing ones closed */
 	g_signal_connect_swapped(priv->application, "add-browser", G_CALLBACK(_cookie_permission_manager_on_add_browser), self);
 }
+
 /* IMPLEMENTATION: GObject */
 
 /* Finalize this object */
 static void cookie_permission_manager_finalize(GObject *inObject)
 {
-	CookiePermissionManagerPrivate	*priv=COOKIE_PERMISSION_MANAGER(inObject)->priv;
+	CookiePermissionManager			*self=COOKIE_PERMISSION_MANAGER(inObject);
+	CookiePermissionManagerPrivate	*priv=self->priv;
+	GList							*browsers, *browser;
+	GList							*tabs, *tab;
+	WebKitWebView					*webkitView;
 
 	/* Dispose allocated resources */
 	if(priv->database)
@@ -877,8 +888,24 @@ static void cookie_permission_manager_finalize(GObject *inObject)
 	}
 
 	g_signal_handler_disconnect(priv->cookieJar, priv->cookieJarChangedID);
-
 	g_object_steal_data(G_OBJECT(priv->cookieJar), "cookie-permission-manager");
+
+	g_signal_handlers_disconnect_by_data(priv->application, self);
+
+	browsers=midori_app_get_browsers(priv->application);
+	for(browser=browsers; browser; browser=g_list_next(browser))
+	{
+		g_signal_handlers_disconnect_by_data(browser->data, self);
+
+		tabs=midori_browser_get_tabs(MIDORI_BROWSER(browser->data));
+		for(tab=tabs; tab; tab=g_list_next(tab))
+		{
+			webkitView=WEBKIT_WEB_VIEW(midori_view_get_web_view(MIDORI_VIEW(tab->data)));
+			g_signal_handlers_disconnect_by_data(webkitView, self);
+		}
+		g_list_free(tabs);
+	}
+	g_list_free(browsers);
 
 	/* Call parent's class finalize method */
 	G_OBJECT_CLASS(cookie_permission_manager_parent_class)->finalize(inObject);
