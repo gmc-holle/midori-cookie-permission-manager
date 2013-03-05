@@ -282,21 +282,19 @@ static void _cookie_permission_manager_preferences_window_manager_database_chang
 {
 	CookiePermissionManagerPreferencesWindowPrivate	*priv=self->priv;
 	CookiePermissionManager							*manager=COOKIE_PERMISSION_MANAGER(inUserData);
-	sqlite3											*database;
+	const gchar										*databaseFilename;
 
 	/* Close connection to any open database */
 	if(priv->database) sqlite3_close(priv->database);
 	priv->database=NULL;
 
 	/* Get pointer to new database and open database */
-	g_object_get(manager, "database", &database, NULL);
-	if(database)
+	g_object_get(manager, "database-filename", &databaseFilename, NULL);
+	if(databaseFilename)
 	{
-		const gchar									*databaseFile;
 		gint										success;
 
-		databaseFile=sqlite3_db_filename(database, NULL);
-		success=sqlite3_open(databaseFile, &priv->database);
+		success=sqlite3_open(databaseFilename, &priv->database);
 		if(success!=SQLITE_OK)
 		{
 			g_warning(_("Could not open database of extenstion: %s"), sqlite3_errmsg(priv->database));
@@ -528,7 +526,7 @@ static void cookie_permission_manager_preferences_window_set_property(GObject *i
 				priv->manager=g_object_ref(manager);
 
 				priv->signalManagerChangedDatabaseID=g_signal_connect_swapped(priv->manager,
-																					"notify::database",
+																					"notify::database-filename",
 																					G_CALLBACK(_cookie_permission_manager_preferences_window_manager_database_changed),
 																					self);
 				priv->signalManagerAskForUnknownPolicyID=g_signal_connect_swapped(priv->manager,

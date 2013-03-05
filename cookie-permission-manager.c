@@ -30,8 +30,8 @@ enum
 	PROP_APPLICATION,
 
 	PROP_DATABASE,
+	PROP_DATABASE_FILENAME,
 	PROP_ASK_FOR_UNKNOWN_POLICY,
-
 
 	PROP_LAST
 };
@@ -48,6 +48,7 @@ struct _CookiePermissionManagerPrivate
 	MidoriExtension					*extension;
 	MidoriApp						*application;
 	sqlite3							*database;
+	gchar							*databaseFilename;
 	gboolean						askForUnknownPolicy;
 
 	/* Cookie jar related */
@@ -112,7 +113,6 @@ static void _cookie_permission_manager_open_database(CookiePermissionManager *se
 {
 	CookiePermissionManagerPrivate	*priv=self->priv;
 	const gchar						*configDir;
-	gchar							*databaseFile;
 	gchar							*error=NULL;
 	gint							success;
 	sqlite3_stmt					*statement=NULL;
@@ -120,9 +120,11 @@ static void _cookie_permission_manager_open_database(CookiePermissionManager *se
 	/* Close any open database */
 	if(priv->database)
 	{
+		g_free(priv->databaseFilename);
 		sqlite3_close(priv->database);
 		priv->database=NULL;
 		g_object_notify_by_pspec(G_OBJECT(self), CookiePermissionManagerProperties[PROP_DATABASE]);
+		g_object_notify_by_pspec(G_OBJECT(self), CookiePermissionManagerProperties[PROP_DATABASE_FILENAME]);
 	}
 
 	/* Build path to database file */
@@ -144,12 +146,14 @@ static void _cookie_permission_manager_open_database(CookiePermissionManager *se
 	}
 
 	/* Open database */
-	databaseFile=g_build_filename(configDir, COOKIE_PERMISSION_DATABASE, NULL);
-	success=sqlite3_open(databaseFile, &priv->database);
-	g_free(databaseFile);
+	priv->databaseFilename=g_build_filename(configDir, COOKIE_PERMISSION_DATABASE, NULL);
+	success=sqlite3_open(priv->databaseFilename, &priv->database);
 	if(success!=SQLITE_OK)
 	{
 		g_warning(_("Could not open database of extenstion: %s"), sqlite3_errmsg(priv->database));
+
+		g_free(priv->databaseFilename);
+		priv->databaseFilename=NULL;
 
 		if(priv->database) sqlite3_close(priv->database);
 		priv->database=NULL;
@@ -194,6 +198,9 @@ static void _cookie_permission_manager_open_database(CookiePermissionManager *se
 			g_critical(_("Failed to execute database statement: %s"), error);
 			sqlite3_free(error);
 		}
+
+		g_free(priv->databaseFilename);
+		priv->databaseFilename=NULL;
 
 		sqlite3_close(priv->database);
 		priv->database=NULL;
@@ -244,6 +251,7 @@ static void _cookie_permission_manager_open_database(CookiePermissionManager *se
 	sqlite3_finalize(statement);
 
 	g_object_notify_by_pspec(G_OBJECT(self), CookiePermissionManagerProperties[PROP_DATABASE]);
+	g_object_notify_by_pspec(G_OBJECT(self), CookiePermissionManagerProperties[PROP_DATABASE_FILENAME]);
 }
 
 /* Get policy for cookies from domain */
@@ -880,6 +888,13 @@ static void cookie_permission_manager_finalize(GObject *inObject)
 	WebKitWebView					*webkitView;
 
 	/* Dispose allocated resources */
+	if(priv->databaseFilename)
+	{
+		g_free(priv->databaseFilename);
+		priv->databaseFilename=NULL;
+		g_object_notify_by_pspec(inObject, CookiePermissionManagerProperties[PROP_DATABASE_FILENAME]);
+	}
+
 	if(priv->database)
 	{
 		sqlite3_close(priv->database);
@@ -963,6 +978,10 @@ static void cookie_permission_manager_get_property(GObject *inObject,
 			g_value_set_pointer(outValue, self->priv->database);
 			break;
 
+		case PROP_DATABASE_FILENAME:
+			g_value_set_string(outValue, self->priv->databaseFilename);
+			break;
+
 		case PROP_ASK_FOR_UNKNOWN_POLICY:
 			g_value_set_boolean(outValue, self->priv->askForUnknownPolicy);
 			break;
@@ -1009,11 +1028,18 @@ static void cookie_permission_manager_class_init(CookiePermissionManagerClass *k
 								_("Pointer to sqlite database instance used by this extension"),
 								G_PARAM_READABLE);
 
+	CookiePermissionManagerProperties[PROP_DATABASE_FILENAME]=
+		g_param_spec_string("database-filename",
+								_("Database path"),
+								_("Path to sqlite database instance used by this extension"),
+								NULL,
+								G_PARAM_READABLE);
+
 	CookiePermissionManagerProperties[PROP_ASK_FOR_UNKNOWN_POLICY]=
 		g_param_spec_boolean("ask-for-unknown-policy",
 								_("Ask for unknown policy"),
 								_("If true this extension ask for policy for every unknown domain."
-								  "If false this extension uses the global cookie policy set in midori settings."),
+								  "If false this extension uses the global cookie policy set in Midori settings."),
 								TRUE,
 								G_PARAM_READWRITE | G_PARAM_CONSTRUCT);
 
@@ -1031,6 +1057,7 @@ static void cookie_permission_manager_init(CookiePermissionManager *self)
 
 	/* Set up default values */
 	priv->database=NULL;
+	priv->databaseFilename=NULL;
 	priv->askForUnknownPolicy=TRUE;
 
 	/* Hijack session's cookie jar to handle cookies requests on our own in HTTP streams
@@ -1042,7 +1069,6 @@ static void cookie_permission_manager_init(CookiePermissionManager *self)
 	g_object_set_data(G_OBJECT(priv->cookieJar), "cookie-permission-manager", self);
 
 	/* Listen to changed cookies set or changed by other sources like javascript */
-	// FIXME
 	priv->cookieJarChangedID=g_signal_connect_swapped(priv->cookieJar, "changed", G_CALLBACK(_cookie_permission_manager_on_cookie_changed), self);
 }
 
