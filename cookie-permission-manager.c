@@ -121,8 +121,11 @@ static void _cookie_permission_manager_open_database(CookiePermissionManager *se
 	if(priv->database)
 	{
 		g_free(priv->databaseFilename);
+		priv->databaseFilename=NULL;
+
 		sqlite3_close(priv->database);
 		priv->database=NULL;
+
 		g_object_notify_by_pspec(G_OBJECT(self), CookiePermissionManagerProperties[PROP_DATABASE]);
 		g_object_notify_by_pspec(G_OBJECT(self), CookiePermissionManagerProperties[PROP_DATABASE_FILENAME]);
 	}
