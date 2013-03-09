@@ -553,7 +553,7 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 
 	/* Create list and set up columns of list */
 	list=gtk_tree_view_new_with_model(GTK_TREE_MODEL(listStore));
-#ifndef HAVE_GTK3
+#ifndef GTK__3_0_VERSION
 	gtk_widget_set_size_request(list, -1, 100);
 #endif
 
@@ -597,7 +597,7 @@ static gint _cookie_permission_manager_ask_for_policy(CookiePermissionManager *s
 	gtk_tree_view_append_column(GTK_TREE_VIEW(list), column);
 
 	scrolled=gtk_scrolled_window_new(NULL, NULL);
-#ifdef HAVE_GTK3
+#ifdef GTK__3_0_VERSION
 	gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(scrolled), 100);
 #endif
 	gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
